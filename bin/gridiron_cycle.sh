@@ -6,6 +6,7 @@
 #   grade   score the picks whose games have now finished
 #   odds    observe the market (skipped silently with no key)
 #   predict write picks for the upcoming slate, from the NEW ratings
+#   export  write the pick record to tracked CSV and commit it locally
 #
 # grade runs before predict so a week is always scored against the ratings that
 # existed when the pick was made, never against ratings that have since seen the
@@ -28,5 +29,9 @@ else
   echo "GRIDIRON_ODDS_KEY unset — skipping market lines"
 fi
 "$GI" predict
+
+# Refresh the durable record. Committed locally so a lost database cannot take
+# the pick history with it; pushing stays manual, because pushing publishes.
+"$GI" export --commit
 
 echo "=== cycle complete $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="

@@ -81,6 +81,7 @@ Everything works without a key. Market columns simply stay empty, which reads as
 | `ratings --league cfb --limit 25` | power ratings |
 | `matchup "Georgia" "Alabama" [--neutral]` | any two teams, real fixture or not |
 | `backtest --seasons 2024,2025` | walk-forward test on past seasons |
+| `export [--commit]` | write the pick record to tracked CSV |
 | `status` | what the database holds and how fresh it is |
 
 ## The model
@@ -194,6 +195,30 @@ Register it in `~/.claude.json` under `mcpServers`:
   "headers": { "Authorization": "Bearer <GRIDIRON_MCP_TOKEN>" }
 }
 ```
+
+## The record is exported, the database is not
+
+`data/gridiron.db` is untracked — it is a rebuildable cache of ESPN's data, and a
+binary makes a poor diff. Anyone can reconstruct it with `init`, `backfill`, `rate`.
+
+One thing in it cannot be reconstructed: **what was predicted, and when.**
+Predictions lock at kickoff by design, so re-running anything after the fact
+produces different picks from ratings that have since seen the results. A lost
+database would silently reset the record to 0-0.
+
+So `gridiron export` writes it to `record/`, which *is* tracked:
+
+| file | what it holds |
+|---|---|
+| `record/predictions.csv` | every pick, with the timestamp it was made, the ratings behind it, the market's view, and how it graded |
+| `record/ratings.csv` | current power ratings with their computed-at stamp |
+| `record/summary.md` | human-readable accuracy report |
+
+The weekly cycle runs `export --commit` automatically, committing the record
+locally. **It never pushes** — pushing publishes, and that stays a deliberate act.
+Run `git push` yourself when you want the record off the machine.
+
+Ungraded picks export as an empty `result`, not a loss.
 
 ## Configuration
 

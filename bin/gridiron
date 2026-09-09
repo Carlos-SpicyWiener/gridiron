@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lib import backtest, db, elo, espn, odds, picks  # noqa: E402
+from lib import backtest, db, elo, espn, exporter, odds, picks  # noqa: E402
 
 LEAGUES = ("nfl", "cfb")
 
@@ -159,6 +159,36 @@ def cmd_backtest(args):
     conn.close()
 
 
+def cmd_export(args):
+    conn = db.connect(readonly=True)
+    res = exporter.export(conn, args.dir)
+    conn.close()
+    say(f"exported {res['predictions']} predictions ({res['graded']} graded) and "
+        f"{res['ratings']} ratings to {res['dir']}/")
+    if not args.commit:
+        say("These are tracked in git; the database is not. Commit them to keep the "
+            "record — locked picks cannot be regenerated.")
+        return 0
+
+    # Local commit only. Pushing publishes, and that stays a deliberate act.
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    def git(*a):
+        return subprocess.run(("git", "-C", root) + a, capture_output=True, text=True)
+    if git("rev-parse", "--git-dir").returncode != 0:
+        say("not a git repository — nothing committed")
+        return 0
+    git("add", "--", args.dir)
+    if not git("diff", "--cached", "--quiet", "--", args.dir).returncode:
+        say("record unchanged since the last commit")
+        return 0
+    r = git("commit", "-m", f"Update pick record ({res['graded']} graded of "
+                            f"{res['predictions']})", "--", args.dir)
+    say("committed locally" if r.returncode == 0 else f"commit failed: {r.stderr.strip()}")
+    say("Not pushed — run `git push` when you want it off this machine.")
+    return 0
+
+
 def cmd_status(args):
     conn = db.connect(readonly=True)
     say(f"db: {db.DB_PATH}")
@@ -245,6 +275,12 @@ def main():
     p.add_argument("--warmup-from", type=int, default=None,
                    help="earliest season used to build ratings before scoring starts")
     p.set_defaults(fn=cmd_backtest)
+
+    p = sub.add_parser("export", help="write the pick record to tracked CSV files")
+    p.add_argument("--dir", default="record", help="output directory (default: record)")
+    p.add_argument("--commit", action="store_true",
+                   help="also commit the record locally (never pushes)")
+    p.set_defaults(fn=cmd_export)
 
     sub.add_parser("status", help="what the database holds").set_defaults(fn=cmd_status)
 
