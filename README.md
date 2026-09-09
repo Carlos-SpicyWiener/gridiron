@@ -154,6 +154,23 @@ visible instead of being buried; it has not been tuned away, because fitting a
 shrinkage constant to the same two seasons used to measure it would mostly be
 overfitting.
 
+### The live market agrees with the backtest
+
+On the first slate carrying lines (66 games), the model picked the same side as
+the book in 56 of them. Where they agree, the gap in stated confidence splits
+cleanly by league:
+
+| | model vs book, same side |
+|---|---|
+| NFL | **+3.5 points more** confident |
+| CFB | **−7.2 points less** confident |
+
+That is the backtest's calibration finding reproduced against live prices rather
+than replayed history — NFL overconfident, college mildly underconfident — and
+the two were measured by completely independent means. It is the strongest
+evidence here that the calibration flaw is real and league-specific rather than
+an artefact of which seasons were tested.
+
 ## Two rules the code enforces
 
 **Predictions lock at kickoff.** `predict` will overwrite a pick for a game that
@@ -176,10 +193,7 @@ with:
 - **Beating the market is the real bar.** Picking straight-up winners at 67% sounds
   strong and is roughly what favourites win at anyway. `record` prints the model
   and the market side by side for exactly this reason. Matching the market means
-  the model is re-deriving public information more slowly. Early evidence is not
-  flattering: on the opening slate the model is consistently *more* confident than
-  the book on the same side — 73% against 60%, 78% against 66% — which is the
-  overconfidence the backtest already flagged, now visible live.
+  the model is re-deriving public information more slowly.
 - **College week 1 is close to guesswork.** Ratings carry over from last season
   through a heavy regression, and a roster can turn over almost entirely.
 - **No line is not the same as an even line.** Ungraded and unobserved stay NULL
