@@ -1,11 +1,18 @@
-"""The Odds API integration — market lines as a benchmark, never as an input.
+"""Market lines as a benchmark, never as an input.
+
+Two sources, and the free one is the default. ESPN embeds a book's line in the
+scoreboard payload the sync already fetches, so market data costs no key and no
+extra request; that ingestion lives in espn.py. This module adds The Odds API
+on top for a multi-book consensus, which is strictly better but needs a key.
+Neither is ever fed to the model.
 
 The model does not read the market. Odds are stored alongside predictions purely
 so the record can answer the only question that matters about a picks system:
 does it beat the closing line, or is it just re-deriving it more slowly?
 
-Requires GRIDIRON_ODDS_KEY. Without one, everything else still works and market
-columns stay NULL — which reads as "no line observed", not "no line existed".
+Requires GRIDIRON_ODDS_KEY. Without one, the ESPN line still populates the
+market columns; a genuinely unobserved line stays NULL, which reads as "no line
+observed", not "no line existed".
 """
 import json
 import os
@@ -163,11 +170,16 @@ def ingest(conn, league, progress=None):
 
 def consensus(conn, game_id):
     """Median de-vigged home probability across the most recent snapshot's books."""
+    # Latest price per book, opening lines excluded: an opening number is a
+    # historical artefact, not a competing quote, and averaging it with the
+    # current line would report a market position nobody is offering.
     rows = conn.execute(
-        "SELECT home_price, away_price FROM odds_snapshot "
-        "WHERE game_id = ? AND fetched_at = "
-        "      (SELECT MAX(fetched_at) FROM odds_snapshot WHERE game_id = ?) "
-        "  AND home_price IS NOT NULL AND away_price IS NOT NULL", (game_id, game_id)).fetchall()
+        "SELECT s.home_price, s.away_price FROM odds_snapshot s "
+        "JOIN (SELECT book, MAX(fetched_at) AS at FROM odds_snapshot "
+        "      WHERE game_id = ? AND book NOT LIKE '%-open' GROUP BY book) latest "
+        "  ON latest.book = s.book AND latest.at = s.fetched_at "
+        "WHERE s.game_id = ? AND s.home_price IS NOT NULL AND s.away_price IS NOT NULL",
+        (game_id, game_id)).fetchall()
     probs = []
     for r in rows:
         ph, _ = devig(american_to_prob(r["home_price"]), american_to_prob(r["away_price"]))

@@ -105,11 +105,77 @@ def _status(event):
     return {"pre": "scheduled", "in": "in", "post": "final"}.get(state, "scheduled")
 
 
+# --------------------------------------------------------------------------
+# odds carried inside the scoreboard payload
+# --------------------------------------------------------------------------
+# ESPN embeds a book's line (DraftKings, currently) in each competition. That
+# makes market data free in the most literal sense: it arrives in a request we
+# already make, with no key, no signup and no extra round trip. One book is a
+# thinner benchmark than a multi-book consensus, but a major book's closing
+# line is the number worth being measured against anyway.
+#
+# Both the opening and closing price are published, so line movement is stored
+# too — as a separate pseudo-book, because an opening price is not a competing
+# quote and must never be averaged with the close.
+
+def _american(value):
+    """ESPN gives prices as strings like '-170' or 'EVEN'."""
+    if value is None:
+        return None
+    text = str(value).strip().upper().replace("+", "")
+    if text in ("EVEN", "EV", "PK"):
+        return 100
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def ingest_odds(conn, game_id, comp, stamp):
+    """Store the book's line for a game, if it moved since the last snapshot.
+
+    Returns the number of snapshot rows written (0, 1 or 2).
+    """
+    written = 0
+    for od in (comp.get("odds") or []):
+        provider = _get(od, "provider", "name", default="book")
+        spread = od.get("spread")
+        try:
+            spread = float(spread) if spread is not None else None
+        except (TypeError, ValueError):
+            spread = None
+        ml = od.get("moneyline") or {}
+        for phase, suffix in (("close", ""), ("open", "-open")):
+            home = _american(_get(ml, "home", phase, "odds"))
+            away = _american(_get(ml, "away", phase, "odds"))
+            if home is None or away is None:
+                continue
+            book = f"{provider}{suffix}".lower().replace(" ", "-")
+            # Append only when something actually moved. The table is a history
+            # of the market, not a log of how often the sync ran.
+            last = conn.execute(
+                "SELECT home_price, away_price, home_spread FROM odds_snapshot "
+                "WHERE game_id = ? AND book = ? ORDER BY fetched_at DESC LIMIT 1",
+                (game_id, book)).fetchone()
+            this_spread = spread if phase == "close" else None
+            if last and last["home_price"] == home and last["away_price"] == away \
+                    and last["home_spread"] == this_spread:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO odds_snapshot (game_id, book, fetched_at, "
+                "home_price, away_price, home_spread) VALUES (?, ?, ?, ?, ?, ?)",
+                (game_id, book, stamp, home, away, this_spread))
+            written += 1
+        break  # ESPN lists one provider; take the first and stop
+    return written
+
+
 def ingest_events(conn, league, payload, fbs_ids=None):
     """Write every event in a scoreboard payload. Returns (seen, new)."""
     season = _get(payload, "season", "year")
     season_type = _get(payload, "season", "type", default=2)
-    seen = new = 0
+    seen = new = odds_rows = 0
+    stamp = db.now()
     for event in payload.get("events", []):
         comp = _get(event, "competitions", 0)
         if not comp:
@@ -154,7 +220,7 @@ def ingest_events(conn, league, payload, fbs_ids=None):
         if status != "final":
             home_score = away_score = None  # never store a partial score as a result
 
-        _, created = db.upsert_game(conn, {
+        game_id, created = db.upsert_game(conn, {
             "league": league,
             "espn_id": str(event.get("id")),
             "season": season or _get(payload, "season", "year", default=0),
@@ -170,7 +236,11 @@ def ingest_events(conn, league, payload, fbs_ids=None):
         })
         seen += 1
         new += 1 if created else 0
-    return seen, new
+        if status == "scheduled":
+            # Only pre-game lines are meaningful; a book's number on a finished
+            # game is not a forecast of anything.
+            odds_rows += ingest_odds(conn, game_id, comp, stamp)
+    return seen, new, odds_rows
 
 
 def ingest_season(conn, league, season, progress=None):
@@ -188,7 +258,7 @@ def ingest_season(conn, league, season, progress=None):
                 if progress:
                     progress(f"    skip {season} t{season_type} w{week}: {e}")
                 continue
-            seen, new = ingest_events(conn, league, payload, fbs)
+            seen, new, _ = ingest_events(conn, league, payload, fbs)
             total_seen += seen
             total_new += new
             if progress and seen:
@@ -216,7 +286,7 @@ def ingest_current(conn, league, progress=None):
     week = _get(payload, "week", "number", default=1)
     fbs = fbs_team_ids(season) if league == "cfb" else None
 
-    total_seen = total_new = 0
+    total_seen = total_new = total_odds = 0
     for wk in (week - 1, week, week + 1):
         if wk < 1:
             continue
@@ -226,11 +296,13 @@ def ingest_current(conn, league, progress=None):
             if progress:
                 progress(f"    skip week {wk}: {e}")
             continue
-        seen, new = ingest_events(conn, league, pl, fbs)
+        seen, new, odds_rows = ingest_events(conn, league, pl, fbs)
         total_seen += seen
         total_new += new
+        total_odds += odds_rows
         if progress:
-            progress(f"    {league.upper()} {season} week {wk}: {seen} games ({new} new)")
+            progress(f"    {league.upper()} {season} week {wk}: {seen} games ({new} new"
+                     + (f", {odds_rows} odds moves" if odds_rows else "") + ")")
         conn.commit()
         time.sleep(THROTTLE_S)
-    return season, week, total_seen, total_new
+    return season, week, total_seen, total_new, total_odds

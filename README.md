@@ -52,18 +52,28 @@ systemctl --user enable --now gridiron-sync.timer gridiron-mcp
 loginctl enable-linger "$USER"
 ```
 
-### Market lines (optional)
+### Market lines
 
-```bash
-mkdir -p ~/.config/gridiron && install -m600 /dev/null ~/.config/gridiron/env
-echo 'GRIDIRON_ODDS_KEY=your_key_here' >> ~/.config/gridiron/env
-```
+Nothing to configure. ESPN embeds a book's line (DraftKings) inside the same
+scoreboard payload `sync` already downloads, so market data arrives with no key,
+no signup and **no additional HTTP request**. Coverage in practice:
 
-Free tier at <https://the-odds-api.com> is 500 requests/month. One `gridiron odds`
-run costs one request per league, so twice a day across both leagues is ~120/month.
+| | games with both moneylines |
+|---|---|
+| NFL | essentially all |
+| CFB | ~two thirds — books often don't price an FBS/FCS mismatch |
 
-Everything works without a key. Market columns simply stay empty, which reads as
-*no line was observed* — not *there was no line*.
+Both the opening and closing price are published, so line movement is stored too.
+Opening lines are kept under a separate `…-open` pseudo-book and excluded from the
+consensus: an opening number is a historical artefact, not a competing quote, and
+averaging it with the current line would report a price nobody is offering.
+
+*Optionally*, `GRIDIRON_ODDS_KEY` from <https://the-odds-api.com> (free, 500
+requests/month) adds a genuine multi-book consensus on top, which is a better
+benchmark than one book. `gridiron odds` fetches it. Nothing depends on it.
+
+A line that was never observed stays NULL, which reads as *no line observed* —
+not *there was no line*.
 
 ## Commands
 
@@ -73,7 +83,7 @@ Everything works without a key. Market columns simply stay empty, which reads as
 | `backfill --seasons 2021-2025` | pull historical seasons |
 | `sync` | refresh the current week's schedule and results |
 | `rate` | recompute every rating from scratch |
-| `odds` | pull market lines |
+| `odds` | pull the optional multi-book consensus |
 | `predict [--days 10]` | write picks for upcoming games |
 | `slate` | the current board of picks |
 | `grade` | score finished games |
@@ -166,7 +176,10 @@ with:
 - **Beating the market is the real bar.** Picking straight-up winners at 67% sounds
   strong and is roughly what favourites win at anyway. `record` prints the model
   and the market side by side for exactly this reason. Matching the market means
-  the model is re-deriving public information more slowly.
+  the model is re-deriving public information more slowly. Early evidence is not
+  flattering: on the opening slate the model is consistently *more* confident than
+  the book on the same side — 73% against 60%, 78% against 66% — which is the
+  overconfidence the backtest already flagged, now visible live.
 - **College week 1 is close to guesswork.** Ratings carry over from last season
   through a heavy regression, and a roster can turn over almost entirely.
 - **No line is not the same as an even line.** Ungraded and unobserved stay NULL
@@ -262,7 +275,7 @@ renders on the repository page in any phone browser.
 |---|---|---|
 | `GRIDIRON_DB` | `data/gridiron.db` | database location |
 | `GRIDIRON_TZ` | `America/Chicago` | zone kickoff times display in |
-| `GRIDIRON_ODDS_KEY` | unset | The Odds API key; market columns stay empty without it |
+| `GRIDIRON_ODDS_KEY` | unset | optional; adds a multi-book consensus over the free ESPN line |
 | `GRIDIRON_MCP_PORT` | `8914` | port the MCP server listens on (loopback only) |
 | `GRIDIRON_MCP_TOKEN` | unset | bearer token; auth is off when unset |
 

@@ -65,8 +65,9 @@ def cmd_backfill(args):
 def cmd_sync(args):
     conn = db.connect()
     for league in leagues_from(args.league):
-        season, week, seen, new = espn.ingest_current(conn, league, progress=say)
-        say(f"{league.upper()}: {season} week {week} — {seen} games ({new} new)")
+        season, week, seen, new, odds_rows = espn.ingest_current(conn, league, progress=say)
+        say(f"{league.upper()}: {season} week {week} — {seen} games ({new} new), "
+            f"{odds_rows} odds snapshots")
     conn.close()
 
 
@@ -78,11 +79,15 @@ def cmd_rate(args):
 
 
 def cmd_odds(args):
+    """Optional multi-book consensus. The free single-book line already arrives
+    with every `sync`, so this is an enhancement, not a prerequisite."""
     if not odds.have_key():
-        say("GRIDIRON_ODDS_KEY is not set — no odds fetched.\n"
-            "Get a free key at https://the-odds-api.com (500 requests/month), then:\n"
-            "  export GRIDIRON_ODDS_KEY=...")
-        return 1
+        say("GRIDIRON_ODDS_KEY is not set — nothing fetched here, but market\n"
+            "lines are already being collected free from the ESPN payload during\n"
+            "`sync`. This command only adds a multi-book consensus on top.\n"
+            "If you want that: free key at https://the-odds-api.com, then put\n"
+            "GRIDIRON_ODDS_KEY in ~/.config/gridiron/env")
+        return 0
     conn = db.connect()
     for league in leagues_from(args.league):
         try:
@@ -223,10 +228,21 @@ def cmd_status(args):
         say(f"  games      {g['n']} ({g['fin'] or 0} final), seasons {g['lo']}-{g['hi']}")
         say(f"  ratings    {r['n']} teams rated, computed {r['at'] or 'never'}")
         say(f"  picks      {p['n']} written, {p['pending'] or 0} awaiting a result")
-    o = conn.execute("SELECT COUNT(*) n, MAX(fetched_at) at FROM odds_snapshot").fetchone()
-    say(f"\nodds       {o['n']} snapshots"
-        + (f", latest {o['at']}" if o["at"] else "")
-        + ("" if odds.have_key() else "   [GRIDIRON_ODDS_KEY not set]"))
+    o = conn.execute("SELECT COUNT(*) n, MAX(fetched_at) at, COUNT(DISTINCT book) books "
+                     "FROM odds_snapshot").fetchone()
+    covered = conn.execute(
+        "SELECT COUNT(DISTINCT s.game_id) n FROM odds_snapshot s JOIN game g ON g.id = s.game_id "
+        "WHERE g.status = 'scheduled'").fetchone()["n"]
+    upcoming = conn.execute(
+        "SELECT COUNT(*) n FROM game WHERE status = 'scheduled' "
+        "AND kickoff_utc > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')").fetchone()["n"]
+    say(f"\nodds       {o['n']} snapshots from {o['books']} book feed(s)"
+        + (f", latest {o['at']}" if o["at"] else ""))
+    say(f"           {covered} of {upcoming} upcoming games have a line "
+        f"(free, from the ESPN payload)")
+    if not odds.have_key():
+        say("           GRIDIRON_ODDS_KEY unset — optional; it would add a "
+            "multi-book consensus on top")
     conn.close()
 
 
