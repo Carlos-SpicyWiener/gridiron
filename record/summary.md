@@ -2,7 +2,7 @@
 
 Written by `gridiron export`. Every figure below is measured from the database, not derived.
 
-- predictions: 102 (0 graded, 102 awaiting a result)
+- predictions: 106 (0 graded, 106 awaiting a result)
 - teams rated: 277
 - ratings computed at: 2026-09-09T01:24:10Z
 - last graded at: nothing graded yet

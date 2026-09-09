@@ -101,3 +101,7 @@ game_id,league,season,week,kickoff_utc,away_team,home_team,neutral_site,model,pi
 6000,nfl,2026,1,2026-09-13T20:25Z,Arizona Cardinals,Los Angeles Chargers,0,elo-1.0,2026-09-09T01:13:08Z,Los Angeles Chargers,0.8127,lock,1538.0,1331.1,,,,,,,
 6001,nfl,2026,1,2026-09-14T00:20Z,Dallas Cowboys,New York Giants,0,elo-1.0,2026-09-09T01:13:08Z,Dallas Cowboys,0.5186,coin-flip,1372.2,1433.1,,,,,,,
 6002,nfl,2026,1,2026-09-15T00:15Z,Denver Broncos,Kansas City Chiefs,0,elo-1.0,2026-09-09T01:13:08Z,Denver Broncos,0.6549,lean,1504.5,1663.8,,,,,,,
+6204,cfb,2026,3,2026-09-17T23:30Z,Syracuse Orange,Pittsburgh Panthers,0,elo-1.0,2026-09-09T01:25:12Z,Pittsburgh Panthers,0.8312,lock,1597.5,1385.6,,,,,,,
+6188,nfl,2026,2,2026-09-18T00:15Z,Detroit Lions,Buffalo Bills,0,elo-1.0,2026-09-09T01:25:12Z,Buffalo Bills,0.6703,lean,1668.5,1593.2,,,,,,,
+6205,cfb,2026,3,2026-09-18T23:30Z,Miami Hurricanes,Wake Forest Demon Deacons,0,elo-1.0,2026-09-09T01:25:12Z,Miami Hurricanes,0.7377,lean,1565.7,1810.4,,,,,,,
+6206,cfb,2026,3,2026-09-19T00:00Z,Houston Cougars,Texas Tech Red Raiders,0,elo-1.0,2026-09-09T01:25:12Z,Texas Tech Red Raiders,0.7774,lock,1738.6,1586.4,,,,,,,
