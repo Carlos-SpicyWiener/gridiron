@@ -220,6 +220,12 @@ Run `git push` yourself when you want the record off the machine.
 
 Ungraded picks export as an empty `result`, not a loss.
 
+Everything in this path is idempotent. `predict` leaves a pick untouched unless
+it actually changes, so `made_at` means *when the pick took its current form*
+rather than *when predict last ran* — and a cycle that finds no new games
+produces no commit at all. Running the cycle ten times in a row changes nothing
+ten times.
+
 ## Configuration
 
 | variable | default | what it does |

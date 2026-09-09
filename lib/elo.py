@@ -121,7 +121,21 @@ def recompute(conn, progress=None):
         history.append((home, g["id"], g["season"], ratings[home]))
         history.append((away, g["id"], g["season"], ratings[away]))
 
-    stamp = db.now()
+    # Reuse the previous timestamp when nothing actually moved. `rate` runs on
+    # every cycle and rebuilds the whole table, so a fresh stamp each time would
+    # make the exported ratings differ when every number in them is identical —
+    # churn that buries real rating changes. The stamp means "as of when these
+    # VALUES became current", which is the only version worth recording.
+    previous = {r["team_id"]: (r["rating"], r["games"], r["computed_at"])
+                for r in conn.execute(
+                    "SELECT team_id, rating, games, computed_at FROM rating_current")}
+    identical = len(previous) == len(teams) and all(
+        tid in previous
+        and abs(previous[tid][0] - ratings[tid]) < 1e-9
+        and previous[tid][1] == played[tid]
+        for tid in teams)
+    stamp = next(iter(previous.values()))[2] if identical and previous else db.now()
+
     conn.execute("DELETE FROM rating_history")
     conn.execute("DELETE FROM rating_current")
     conn.executemany(

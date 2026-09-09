@@ -72,7 +72,7 @@ def predict(conn, league=None, days=8, model=elo.MODEL_VERSION):
         params.append(league)
     sql += " ORDER BY g.kickoff_utc"
 
-    written = skipped = locked = 0
+    written = skipped = locked = unchanged = 0
     for g in conn.execute(sql, params).fetchall():
         r_home = ratings.get(g["home_team_id"])
         r_away = ratings.get(g["away_team_id"])
@@ -101,6 +101,11 @@ def predict(conn, league=None, days=8, model=elo.MODEL_VERSION):
             else:
                 market_pick_id, market_prob = g["away_team_id"], 1.0 - market_prob_home
 
+        # The WHERE clause is the point: an identical re-run must not touch the
+        # row. made_at then means "when this pick took its current form", which
+        # is the only reading that makes the exported record auditable — and it
+        # stops three cycles a day from churning a timestamp into every diff.
+        before = conn.total_changes
         conn.execute(
             "INSERT INTO prediction (game_id, model, made_at, pick_team_id, win_prob, "
             "confidence, home_rating, away_rating, market_pick_team_id, market_prob) "
@@ -110,12 +115,20 @@ def predict(conn, league=None, days=8, model=elo.MODEL_VERSION):
             "confidence = excluded.confidence, home_rating = excluded.home_rating, "
             "away_rating = excluded.away_rating, "
             "market_pick_team_id = excluded.market_pick_team_id, "
-            "market_prob = excluded.market_prob",
+            "market_prob = excluded.market_prob "
+            "WHERE prediction.pick_team_id IS NOT excluded.pick_team_id "
+            "   OR abs(prediction.win_prob - excluded.win_prob) > 0.0005 "
+            "   OR prediction.market_pick_team_id IS NOT excluded.market_pick_team_id "
+            "   OR abs(coalesce(prediction.market_prob, -1.0) "
+            "          - coalesce(excluded.market_prob, -1.0)) > 0.0005",
             (g["id"], model, db.now(), pick_id, prob, elo.confidence(prob),
              r_home, r_away, market_pick_id, market_prob))
-        written += 1
+        if conn.total_changes > before:
+            written += 1
+        else:
+            unchanged += 1
     conn.commit()
-    return written, skipped, locked
+    return written, skipped, locked, unchanged
 
 
 # --------------------------------------------------------------------------
