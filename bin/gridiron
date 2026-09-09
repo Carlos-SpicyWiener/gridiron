@@ -258,12 +258,13 @@ def main():
 
     p = sub.add_parser("predict", help="write picks for upcoming games")
     league_arg(p)
-    p.add_argument("--days", type=int, default=8, help="horizon in days (default 8)")
+    p.add_argument("--days", type=int, default=10,
+                   help="horizon in days (default 10 — reaches next week's slate)")
     p.set_defaults(fn=cmd_predict)
 
     p = sub.add_parser("slate", help="show the current board of picks")
     league_arg(p)
-    p.add_argument("--days", type=int, default=8)
+    p.add_argument("--days", type=int, default=10)
     p.set_defaults(fn=cmd_slate)
 
     sub.add_parser("grade", help="score finished games").set_defaults(fn=cmd_grade)

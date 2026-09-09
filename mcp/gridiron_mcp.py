@@ -45,7 +45,7 @@ def tool_slate(args):
     c = conn()
     try:
         return picks.render_slate(c, league=_league(args),
-                                  days=int(args.get("days", 8) or 8))
+                                  days=int(args.get("days", 10) or 10))
     finally:
         c.close()
 
@@ -169,7 +169,7 @@ TOOLS = [
                     "confidence tier, and whether the betting market agrees. The main board.",
      "inputSchema": {"type": "object", "properties": {
          "league": LEAGUE_PROP,
-         "days": {"type": "integer", "description": "horizon in days (default 8)", "default": 8}}},
+         "days": {"type": "integer", "description": "horizon in days (default 10)", "default": 10}}},
      "_fn": tool_slate},
     {"name": "record",
      "description": "How the picks have actually done: win-loss overall, by league, by "

@@ -74,7 +74,7 @@ Everything works without a key. Market columns simply stay empty, which reads as
 | `sync` | refresh the current week's schedule and results |
 | `rate` | recompute every rating from scratch |
 | `odds` | pull market lines |
-| `predict [--days 8]` | write picks for upcoming games |
+| `predict [--days 10]` | write picks for upcoming games |
 | `slate` | the current board of picks |
 | `grade` | score finished games |
 | `record` | accuracy: overall, by tier, versus the market |

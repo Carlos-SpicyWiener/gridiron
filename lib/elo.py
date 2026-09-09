@@ -129,12 +129,19 @@ def recompute(conn, progress=None):
     previous = {r["team_id"]: (r["rating"], r["games"], r["computed_at"])
                 for r in conn.execute(
                     "SELECT team_id, rating, games, computed_at FROM rating_current")}
-    identical = len(previous) == len(teams) and all(
-        tid in previous
-        and abs(previous[tid][0] - ratings[tid]) < 1e-9
-        and previous[tid][1] == played[tid]
-        for tid in teams)
-    stamp = next(iter(previous.values()))[2] if identical and previous else db.now()
+    now = db.now()
+
+    def stamp_for(tid):
+        """Per-team as-of: held when THIS team's rating did not move.
+
+        A table-wide stamp meant one new opponent entering the league rewrote
+        every row. Per-team, a diff of the exported ratings shows exactly which
+        teams changed and when — which is the entire value of keeping the stamp.
+        """
+        prev = previous.get(tid)
+        if prev and abs(prev[0] - ratings[tid]) < 1e-9 and prev[1] == played[tid]:
+            return prev[2]
+        return now
 
     conn.execute("DELETE FROM rating_history")
     conn.execute("DELETE FROM rating_current")
@@ -144,8 +151,8 @@ def recompute(conn, progress=None):
     conn.executemany(
         "INSERT INTO rating_current (team_id, league, rating, games, last_game_id, computed_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        [(tid, teams[tid]["league"], ratings[tid], played[tid], last_game.get(tid), stamp)
-         for tid in teams])
+        [(tid, teams[tid]["league"], ratings[tid], played[tid], last_game.get(tid),
+          stamp_for(tid)) for tid in teams])
     conn.commit()
     if progress:
         progress(f"  replayed {len(rows)} final games across {len(teams)} teams")

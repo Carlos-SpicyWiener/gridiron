@@ -50,7 +50,7 @@ def _ratings(conn):
 # --------------------------------------------------------------------------
 # predict
 # --------------------------------------------------------------------------
-def predict(conn, league=None, days=8, model=elo.MODEL_VERSION):
+def predict(conn, league=None, days=10, model=elo.MODEL_VERSION):
     """Write picks for scheduled games kicking off within `days`.
 
     Predictions lock at kickoff. A game already under way is skipped rather than
@@ -161,7 +161,7 @@ def grade(conn, model=elo.MODEL_VERSION):
 # --------------------------------------------------------------------------
 # renderers
 # --------------------------------------------------------------------------
-def render_slate(conn, league=None, days=8, model=elo.MODEL_VERSION):
+def render_slate(conn, league=None, days=10, model=elo.MODEL_VERSION):
     sql = ("SELECT p.*, g.league, g.kickoff_utc, g.neutral, g.week, "
            "       ht.name AS home_name, at.name AS away_name, pt.name AS pick_name, "
            "       mt.name AS market_name "
