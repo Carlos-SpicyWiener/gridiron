@@ -200,8 +200,14 @@ def ingest_season(conn, league, season, progress=None):
 
 
 def ingest_current(conn, league, progress=None):
-    """Refresh whatever ESPN considers the current week, plus the week before it
-    so that results from games that finished since the last sync get picked up."""
+    """Refresh the current week, the one before, and the one after.
+
+    Before: results for games that finished since the last sync.
+    Current: live scores and any schedule change.
+    After: next week's fixtures, so the board can look further ahead than the
+    end of this week. Without it a mid-week slate is empty of everything except
+    games already under way.
+    """
     cfg = LEAGUES[league]
     params = dict(cfg["params"])
     payload = _fetch(f"{SITE}/{cfg['path']}/scoreboard?" + urllib.parse.urlencode(params))
@@ -211,7 +217,7 @@ def ingest_current(conn, league, progress=None):
     fbs = fbs_team_ids(season) if league == "cfb" else None
 
     total_seen = total_new = 0
-    for wk in (week - 1, week):
+    for wk in (week - 1, week, week + 1):
         if wk < 1:
             continue
         try:
