@@ -1,0 +1,36 @@
+# User-level unit. Install with:
+#   mkdir -p ~/.config/systemd/user
+#   cp systemd/gridiron-mcp.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now gridiron-mcp
+#   loginctl enable-linger $USER      # so it survives logout
+#
+# NOTE ON HARDENING: fin-mcp is a system unit and can use ProtectKernelTunables,
+# RestrictSUIDSGID, IPAddressDeny and friends. Those all require root and make a
+# *user* unit fail at the CAPABILITIES step, so they are deliberately absent
+# here. The equivalent protection is in the code instead: the server binds
+# 127.0.0.1 only, opens the database read-only with PRAGMA query_only, executes
+# no client SQL, and holds no credential. Run it as a system unit if you want
+# the kernel-level guarantees too.
+[Unit]
+Description=Gridiron MCP server (read-only query layer over gridiron.db)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=GRIDIRON_MCP_HOST=127.0.0.1
+Environment=GRIDIRON_MCP_PORT=8914
+# Bearer token lives outside the unit file:
+#   install -m600 /dev/null ~/.config/gridiron/env
+#   echo 'GRIDIRON_MCP_TOKEN=...' >> ~/.config/gridiron/env
+EnvironmentFile=-%h/.config/gridiron/env
+ExecStart=/usr/bin/python3 %h/gridiron/mcp/gridiron_mcp.py
+Restart=on-failure
+RestartSec=3
+
+# Only the hardening that works unprivileged.
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target

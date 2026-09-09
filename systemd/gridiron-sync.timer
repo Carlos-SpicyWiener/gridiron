@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the gridiron cycle three times a day
+
+[Timer]
+# Football finishes late. 08:00 catches Saturday's college slate and Sunday's
+# NFL results; the midday and evening runs keep the upcoming board fresh as
+# lines move and games get flexed.
+OnCalendar=*-*-* 08,13,23:10:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

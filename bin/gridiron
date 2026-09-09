@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""gridiron — football results, power ratings, and graded straight-up picks.
+
+Typical first run:
+    gridiron init
+    gridiron backfill --seasons 2021-2025     # builds the ratings' history
+    gridiron sync                             # current week's schedule + results
+    gridiron rate                             # recompute every rating
+    gridiron predict                          # write picks for upcoming games
+    gridiron slate                            # look at them
+
+Then weekly:  gridiron sync && gridiron rate && gridiron grade && gridiron predict
+"""
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from lib import backtest, db, elo, espn, odds, picks  # noqa: E402
+
+LEAGUES = ("nfl", "cfb")
+
+
+def say(msg):
+    print(msg, flush=True)
+
+
+def leagues_from(arg):
+    return LEAGUES if arg in (None, "all") else (arg,)
+
+
+def parse_seasons(spec):
+    """'2021-2025' or '2023,2024' or '2024' -> sorted list of ints."""
+    out = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            out.update(range(int(lo), int(hi) + 1))
+        elif part:
+            out.add(int(part))
+    return sorted(out)
+
+
+# --------------------------------------------------------------------------
+def cmd_init(args):
+    path = db.init()
+    say(f"schema applied: {path}")
+
+
+def cmd_backfill(args):
+    seasons = parse_seasons(args.seasons)
+    conn = db.connect()
+    for league in leagues_from(args.league):
+        say(f"\n{league.upper()} backfill: seasons {seasons[0]}-{seasons[-1]}")
+        for season in seasons:
+            say(f"  {season}")
+            seen, new = espn.ingest_season(conn, league, season, progress=say)
+            say(f"    season total: {seen} games ({new} new)")
+    conn.close()
+    say("\nBackfill done. Run `gridiron rate` to rebuild ratings from it.")
+
+
+def cmd_sync(args):
+    conn = db.connect()
+    for league in leagues_from(args.league):
+        season, week, seen, new = espn.ingest_current(conn, league, progress=say)
+        say(f"{league.upper()}: {season} week {week} — {seen} games ({new} new)")
+    conn.close()
+
+
+def cmd_rate(args):
+    conn = db.connect()
+    games, teams = elo.recompute(conn, progress=say)
+    say(f"ratings rebuilt from {games} final games over {teams} teams")
+    conn.close()
+
+
+def cmd_odds(args):
+    if not odds.have_key():
+        say("GRIDIRON_ODDS_KEY is not set — no odds fetched.\n"
+            "Get a free key at https://the-odds-api.com (500 requests/month), then:\n"
+            "  export GRIDIRON_ODDS_KEY=...")
+        return 1
+    conn = db.connect()
+    for league in leagues_from(args.league):
+        try:
+            matched, unmatched, remaining = odds.ingest(conn, league, progress=say)
+        except RuntimeError as e:
+            say(f"{league.upper()}: {e}")
+            continue
+        say(f"{league.upper()}: {matched} games matched, {unmatched} unmatched"
+            + (f", {remaining} api requests left this month" if remaining else ""))
+    conn.close()
+    return 0
+
+
+def cmd_predict(args):
+    conn = db.connect()
+    try:
+        written, skipped, locked = picks.predict(conn, league=args.league if args.league != "all"
+                                                 else None, days=args.days)
+    except RuntimeError as e:
+        say(str(e))
+        return 1
+    say(f"{written} picks written for the next {args.days} days")
+    if skipped:
+        say(f"{skipped} games skipped — a side has no rating yet")
+    if locked:
+        say(f"{locked} left untouched — already kicked off, predictions lock at kickoff")
+    conn.close()
+    return 0
+
+
+def cmd_slate(args):
+    conn = db.connect(readonly=True)
+    say(picks.render_slate(conn, league=args.league if args.league != "all" else None,
+                           days=args.days))
+    conn.close()
+
+
+def cmd_grade(args):
+    conn = db.connect()
+    n = picks.grade(conn)
+    say(f"{n} predictions graded")
+    say("")
+    say(picks.render_record(conn))
+    conn.close()
+
+
+def cmd_record(args):
+    conn = db.connect(readonly=True)
+    say(picks.render_record(conn, league=args.league if args.league != "all" else None))
+    conn.close()
+
+
+def cmd_ratings(args):
+    conn = db.connect(readonly=True)
+    say(picks.render_ratings(conn, league=args.league, limit=args.limit))
+    conn.close()
+
+
+def cmd_matchup(args):
+    conn = db.connect(readonly=True)
+    say(picks.render_matchup(conn, args.home, args.away,
+                             league=args.league if args.league != "all" else None,
+                             neutral=args.neutral))
+    conn.close()
+
+
+def cmd_backtest(args):
+    conn = db.connect(readonly=True)
+    seasons = set(parse_seasons(args.seasons))
+    for league in leagues_from(args.league):
+        res = backtest.run(conn, league, seasons, warmup_from=args.warmup_from)
+        say(backtest.render(res))
+        say("")
+    conn.close()
+
+
+def cmd_status(args):
+    conn = db.connect(readonly=True)
+    say(f"db: {db.DB_PATH}")
+    for league in LEAGUES:
+        g = conn.execute(
+            "SELECT COUNT(*) n, SUM(status = 'final') fin, MIN(season) lo, MAX(season) hi "
+            "FROM game WHERE league = ?", (league,)).fetchone()
+        r = conn.execute("SELECT COUNT(*) n, MAX(computed_at) at FROM rating_current "
+                         "WHERE league = ? AND games > 0", (league,)).fetchone()
+        p = conn.execute(
+            "SELECT COUNT(*) n, SUM(p.correct IS NULL) pending FROM prediction p "
+            "JOIN game g ON g.id = p.game_id WHERE g.league = ?", (league,)).fetchone()
+        say(f"\n{league.upper()}")
+        if not g["n"]:
+            say("  no games ingested yet")
+            continue
+        say(f"  games      {g['n']} ({g['fin'] or 0} final), seasons {g['lo']}-{g['hi']}")
+        say(f"  ratings    {r['n']} teams rated, computed {r['at'] or 'never'}")
+        say(f"  picks      {p['n']} written, {p['pending'] or 0} awaiting a result")
+    o = conn.execute("SELECT COUNT(*) n, MAX(fetched_at) at FROM odds_snapshot").fetchone()
+    say(f"\nodds       {o['n']} snapshots"
+        + (f", latest {o['at']}" if o["at"] else "")
+        + ("" if odds.have_key() else "   [GRIDIRON_ODDS_KEY not set]"))
+    conn.close()
+
+
+# --------------------------------------------------------------------------
+def main():
+    ap = argparse.ArgumentParser(prog="gridiron", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def league_arg(p, default="all"):
+        p.add_argument("--league", choices=("nfl", "cfb", "all"), default=default)
+
+    sub.add_parser("init", help="create the database").set_defaults(fn=cmd_init)
+
+    p = sub.add_parser("backfill", help="pull historical seasons from ESPN")
+    league_arg(p)
+    p.add_argument("--seasons", default="2021-2025", help="e.g. 2021-2025 or 2023,2024")
+    p.set_defaults(fn=cmd_backfill)
+
+    p = sub.add_parser("sync", help="refresh the current week's schedule and results")
+    league_arg(p)
+    p.set_defaults(fn=cmd_sync)
+
+    sub.add_parser("rate", help="recompute all ratings from scratch").set_defaults(fn=cmd_rate)
+
+    p = sub.add_parser("odds", help="pull market lines (needs GRIDIRON_ODDS_KEY)")
+    league_arg(p)
+    p.set_defaults(fn=cmd_odds)
+
+    p = sub.add_parser("predict", help="write picks for upcoming games")
+    league_arg(p)
+    p.add_argument("--days", type=int, default=8, help="horizon in days (default 8)")
+    p.set_defaults(fn=cmd_predict)
+
+    p = sub.add_parser("slate", help="show the current board of picks")
+    league_arg(p)
+    p.add_argument("--days", type=int, default=8)
+    p.set_defaults(fn=cmd_slate)
+
+    sub.add_parser("grade", help="score finished games").set_defaults(fn=cmd_grade)
+
+    p = sub.add_parser("record", help="accuracy so far")
+    league_arg(p)
+    p.set_defaults(fn=cmd_record)
+
+    p = sub.add_parser("ratings", help="power ratings")
+    p.add_argument("--league", choices=("nfl", "cfb"), default="nfl")
+    p.add_argument("--limit", type=int, default=25)
+    p.set_defaults(fn=cmd_ratings)
+
+    p = sub.add_parser("matchup", help="probability for any two teams")
+    p.add_argument("away")
+    p.add_argument("home")
+    league_arg(p)
+    p.add_argument("--neutral", action="store_true", help="no home-field advantage")
+    p.set_defaults(fn=cmd_matchup)
+
+    p = sub.add_parser("backtest", help="walk-forward test on past seasons")
+    league_arg(p)
+    p.add_argument("--seasons", default="2025", help="seasons to score, e.g. 2024,2025")
+    p.add_argument("--warmup-from", type=int, default=None,
+                   help="earliest season used to build ratings before scoring starts")
+    p.set_defaults(fn=cmd_backtest)
+
+    sub.add_parser("status", help="what the database holds").set_defaults(fn=cmd_status)
+
+    args = ap.parse_args()
+    sys.exit(args.fn(args) or 0)
+
+
+if __name__ == "__main__":
+    main()
