@@ -4,7 +4,7 @@ Written by `gridiron export`. Every figure below is measured from the database, 
 
 - predictions: 102 (0 graded, 102 awaiting a result)
 - teams rated: 277
-- ratings computed at: 2026-09-09T00:50:00Z
+- ratings computed at: 2026-09-09T01:14:14Z
 - last graded at: nothing graded yet
 
 Source of truth is `data/gridiron.db`, which is not tracked. These files
