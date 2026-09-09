@@ -15,6 +15,7 @@ Security posture:
 import json
 import os
 import sys
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -252,9 +253,20 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def _authed(self):
+        """Bearer header OR the token as a path segment.
+
+        The header is the better mechanism and is checked first. The path form
+        exists because claude.ai's connector UI takes only a URL, which is why
+        the vault connectors carry their token in the path too. Matching on a
+        path SEGMENT (rather than a prefix) means this works whether or not the
+        reverse proxy in front strips its mount prefix.
+        """
         if not TOKEN:
             return True
-        return self.headers.get("Authorization") == f"Bearer {TOKEN}"
+        if self.headers.get("Authorization") == f"Bearer {TOKEN}":
+            return True
+        path = urllib.parse.urlparse(self.path).path
+        return TOKEN in [seg for seg in path.split("/") if seg]
 
     def _send(self, code, body_obj):
         body = json.dumps(body_obj).encode() if body_obj is not None else b""
@@ -267,6 +279,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def do_GET(self):
+        # Unauthenticated liveness only — no data, no token echo.
         self._send(200, {"ok": True, "server": SERVER_INFO})
 
     def do_POST(self):

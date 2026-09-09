@@ -6,7 +6,7 @@
 #   grade   score the picks whose games have now finished
 #   odds    observe the market (skipped silently with no key)
 #   predict write picks for the upcoming slate, from the NEW ratings
-#   export  write the pick record to tracked CSV and commit it locally
+#   export  write the pick record to tracked CSV, commit, and push it
 #
 # grade runs before predict so a week is always scored against the ratings that
 # existed when the pick was made, never against ratings that have since seen the
@@ -30,8 +30,9 @@ else
 fi
 "$GI" predict
 
-# Refresh the durable record. Committed locally so a lost database cannot take
-# the pick history with it; pushing stays manual, because pushing publishes.
-"$GI" export --commit
+# Refresh the durable record and publish it. Only record/ is ever staged, so a
+# cycle cannot commit the database, the logs, or the token file. A failed push
+# leaves the commit in place rather than retrying blind.
+"$GI" export --push
 
 echo "=== cycle complete $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="

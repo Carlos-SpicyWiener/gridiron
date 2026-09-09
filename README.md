@@ -81,7 +81,7 @@ Everything works without a key. Market columns simply stay empty, which reads as
 | `ratings --league cfb --limit 25` | power ratings |
 | `matchup "Georgia" "Alabama" [--neutral]` | any two teams, real fixture or not |
 | `backtest --seasons 2024,2025` | walk-forward test on past seasons |
-| `export [--commit]` | write the pick record to tracked CSV |
+| `export [--commit] [--push]` | write the pick record to tracked CSV |
 | `status` | what the database holds and how fresh it is |
 
 ## The model
@@ -214,9 +214,10 @@ So `gridiron export` writes it to `record/`, which *is* tracked:
 | `record/ratings.csv` | current power ratings with their computed-at stamp |
 | `record/summary.md` | human-readable accuracy report |
 
-The weekly cycle runs `export --commit` automatically, committing the record
-locally. **It never pushes** — pushing publishes, and that stays a deliberate act.
-Run `git push` yourself when you want the record off the machine.
+The cycle runs `export --push`, so the record commits and publishes on its own.
+Only `record/` is ever staged, so a cycle cannot commit the database, the logs,
+or the token file even if one appeared in the tree. A rejected push leaves the
+commit in place rather than retrying blind — that wants a human, not a cron job.
 
 Ungraded picks export as an empty `result`, not a loss.
 
@@ -225,6 +226,35 @@ it actually changes, so `made_at` means *when the pick took its current form*
 rather than *when predict last ran* — and a cycle that finds no new games
 produces no commit at all. Running the cycle ten times in a row changes nothing
 ten times.
+
+## Reaching it from a phone
+
+The MCP server binds loopback only. To query it from elsewhere, put a reverse
+proxy in front — on this host that is Tailscale:
+
+```bash
+tailscale funnel --bg --yes --set-path=/gridiron http://127.0.0.1:8914
+```
+
+Then add it as a custom connector wherever you use Claude, with the token as the
+last path segment:
+
+```
+https://<your-host>.ts.net/gridiron/<GRIDIRON_MCP_TOKEN>
+```
+
+The server accepts the token as a `Bearer` header *or* as a path segment. The
+header is the better mechanism, but connector UIs generally take only a URL, so
+the path form exists for them. Matching on a path segment rather than a prefix
+means it works whether or not the proxy strips its mount path.
+
+That URL is reachable from the public internet, and the token is the only thing
+protecting it — treat it as a password. `tailscale serve` instead of `funnel`
+keeps it inside your tailnet, but then Claude's servers cannot reach it either,
+so a connector will not work; that trade is the whole decision.
+
+The record is also readable with no infrastructure at all: `record/summary.md`
+renders on the repository page in any phone browser.
 
 ## Configuration
 
