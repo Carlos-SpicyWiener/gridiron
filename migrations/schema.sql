@@ -186,7 +186,16 @@ CREATE TABLE IF NOT EXISTS bet (
   payout            REAL,
   pnl               REAL,
   settled_at        TEXT,
-  notes             TEXT    NOT NULL           -- news context at bet time (--ack-news)
+  notes             TEXT    NOT NULL,          -- news context at bet time (--ack-news)
+  -- How this bet came to be placed. 'sized' means the sizer produced it at this
+  -- size; 'manual' means it was placed by hand -- before the tool existed, or
+  -- against its advice. Both belong in the ledger, because the bankroll does not
+  -- care which was which. Only 'sized' may be used as evidence that the sizer
+  -- finds edge, and the value is written at placement and never revised: moving
+  -- a bet between pools after seeing how it landed is cherry-picking, and it
+  -- always flatters.
+  provenance        TEXT    NOT NULL DEFAULT 'sized'
+                    CHECK (provenance IN ('sized', 'manual'))
 );
 CREATE INDEX IF NOT EXISTS ix_bet_status ON bet (status);
 CREATE INDEX IF NOT EXISTS ix_bet_game   ON bet (game_id);
