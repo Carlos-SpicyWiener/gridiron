@@ -169,7 +169,7 @@ CREATE TABLE IF NOT EXISTS bet (
   cost              REAL    NOT NULL,             -- contracts * (price + fee_per_contract)
   model_prob_raw    REAL    NOT NULL,             -- prediction.win_prob, untouched
   model_prob        REAL    NOT NULL,             -- CALIBRATED (§4.0); what edge and Kelly use
-  calib_model       TEXT    NOT NULL,             -- 'platt_backtest_2024_25'
+  calib_model       TEXT    NOT NULL,             -- 'platt_backtest_2022_25'
   market_prob       REAL,                         -- DraftKings de-vigged; NULL = not observed
   edge              REAL    NOT NULL,             -- model_prob - price - fee_per_contract
   kelly_full        REAL,
@@ -374,12 +374,15 @@ edge  = p_cal − ask − fee(ask)
 
 **Method: per-league Platt scaling**, `logit(p_cal) = a + b·logit(p)`, fitted n-weighted over
 the backtest's calibration buckets. Coefficients as of 2026-09-12 (`calib_model =
-'platt_backtest_2024_25'`, full derivation in Appendix C):
+'platt_backtest_2022_25'`, full derivation in Appendix C):
 
 | league | a | b | shape |
 |---|---|---|---|
-| nfl | +0.13 | **0.74** | `b < 1` — compress toward 0.5 (overconfident at the extremes) |
-| cfb | −0.13 | **1.24** | `b > 1` — expand away from 0.5 (underconfident at the extremes) |
+| nfl | +0.05 | **0.79** | `b < 1` — compress toward 0.5 (overconfident at the top) |
+| cfb | −0.11 | **1.19** | `b > 1` — expand away from 0.5 (underconfident at the top) |
+
+Fitted on the pooled 2022–2025 buckets, after the method was validated out of sample —
+fit one two-season window, score the other, both directions, both leagues (Appendix C.4).
 
 The two leagues having opposite-signed slopes is the backtest's qualitative finding —
 NFL overconfident, college underconfident — expressed as one number each.
@@ -396,8 +399,10 @@ about 0.62 the fit **raises** the NFL probability:
 
 | stated | 0.50 | 0.55 | 0.60 | 0.65 | 0.75 | 0.85 |
 |---|---|---|---|---|---|---|
-| **nfl → ** | 0.532 | 0.569 | 0.606 | 0.643 | 0.720 | 0.804 |
-| | +3.2 | +1.9 | +0.6 | −0.7 | −3.0 | −4.6 |
+| **nfl → ** | 0.512 | 0.552 | 0.592 | 0.632 | 0.716 | 0.807 |
+| | +1.2 | +0.2 | −0.8 | −1.8 | −3.4 | −4.3 |
+
+Neither league is corrected in one direction. NFL's crossover is **0.559**, CFB's **0.641**.
 
 Any blanket "subtract N points from NFL" rule is wrong in *direction* at the low end, which
 matters because the min-edge band puts plenty of candidates there.
@@ -491,18 +496,18 @@ Config for the proving period:
 `exposure_capped`. Five candidates at the 5% cap want 25% against a 20%
 ceiling, so this binds routinely at any bankroll. Any other rule punishes you for scanning early in the week.
 
-**Worked example — a first NFL bet** (stated p = 0.73, c = 0.64). Stakes are given as a
-fraction of bankroll, which is what the sizer actually computes:
+**Worked example — a first NFL bet** (stated p = 0.73, c = 0.64). Stakes are a fraction of
+bankroll, which is what the sizer actually computes:
 
 ```
-p_cal      = sigmoid(0.13 + 0.74·logit(0.73))  = 0.704    ← §4.0, −2.6 pts
+p_cal      = sigmoid(0.05 + 0.79·logit(0.73))  = 0.698    ← §4.0, −3.2 pts
 f          = fee(0.64)                          = 0.03
 all_in     = 0.67
-edge       = 0.704 − 0.64 − 0.03                = 0.0340   ← BELOW min_edge 0.05
+edge       = 0.698 − 0.64 − 0.03                = 0.0276   ← BELOW min_edge 0.05
 ```
 
 **No bet.** Uncalibrated it looked like a +0.060 edge worth 4.55% of bankroll; corrected for
-the model's own documented NFL overconfidence it is +0.034 and fails the gate. Any bet placed
+the model's own documented NFL overconfidence it is +0.028 and fails the gate. Any bet placed
 manually before the tool existed should still be backfilled at its actual size — it is the
 record of what was done, and `report clv` should be allowed to judge it — but the sizer would
 not have taken this one.
@@ -516,9 +521,9 @@ practice:
 
 | bet | stated | calibrated | raw edge | cal. edge | stake, raw → cal. |
 |---|---|---|---|---|---|
-| first NFL bet | 0.730 | 0.704 | +0.060 | +0.034 | 4.55% → **no bet** |
-| DEN @ KC | 0.600 | 0.606 | +0.120 | +0.126 | 5.00% *(capped)* |
-| DAL @ NYG | 0.500 | **0.532** | +0.070 | **+0.102** | 3.07% → **4.49%** |
+| first NFL bet | 0.730 | 0.698 | +0.060 | +0.028 | 4.55% → **no bet** |
+| DEN @ KC | 0.600 | 0.592 | +0.120 | +0.112 | 5.00% *(capped)* |
+| DAL @ NYG | 0.500 | **0.512** | +0.070 | **+0.082** | 3.07% → **3.62%** |
 
 At the 5¢ edge floor quarter-Kelly stays under the 5% cap for every price below **c = 0.73**,
 so on a marginal edge Kelly binds and the cap only catches heavy favourites. The cap bites at
@@ -530,13 +535,16 @@ input, so these exercise the Kelly arithmetic in isolation; §4.0's fit has its 
 `stake` is a fraction of bankroll; the last column is contracts at an **illustrative**
 $1,000 bankroll, purely to check the `floor()`.
 
+Every row is derived from the `p` as written, so the table is self-consistent and is used
+verbatim as the sizer's test fixtures.
+
 | case | p | c | fee | kelly_full | stake (%BR) | contracts /$1k |
 |---|---|---|---|---|---|---|
-| uncalibrated 0.73 | 0.730 | 0.64 | 0.03 | 0.1818 | 4.55% | 67 |
-| calibrated 0.73 | 0.704 | 0.64 | 0.03 | 0.1028 | 2.57% | 38 |
-| DEN @ KC | 0.606 | 0.45 | 0.03 | 0.2421 | 5.00% *(capped)* | 104 |
-| DAL @ NYG | 0.532 | 0.40 | 0.03 | 0.1797 | 4.49% | 104 |
-| small stake | 0.560 | 0.50 | 0.03 | 0.0638 | 1.60% | 30 |
+| uncalibrated 0.73 | 0.730 | 0.64 | 0.03 | 0.1818182 | 4.5455% | 67 |
+| calibrated 0.73 | 0.698 | 0.64 | 0.03 | 0.0848485 | 2.1212% | 31 |
+| DEN @ KC | 0.592 | 0.45 | 0.03 | 0.2153846 | 5.0000% *(capped)* | 104 |
+| DAL @ NYG | 0.512 | 0.40 | 0.03 | 0.1438596 | 3.5965% | 83 |
+| small stake | 0.560 | 0.50 | 0.03 | 0.0638298 | 1.5957% | 30 |
 | no edge | 0.500 | 0.50 | 0.03 | negative | 0 | 0 |
 
 ## 6. CLI surface
@@ -727,33 +735,60 @@ buckets over n = 594, two of them past 2.5σ.
 Two-parameter Platt scaling per league, `logit(p_cal) = a + b·logit(p)`, maximising the
 n-weighted binomial log-likelihood over the buckets above.
 
-| league | a | b |
-|---|---|---|
-| nfl | +0.13 | 0.74 |
-| cfb | −0.13 | 1.24 |
+| league | a | b | fitted on |
+|---|---|---|---|
+| nfl | +0.05 | 0.79 | pooled 2022–2025 |
+| cfb | −0.11 | 1.19 | pooled 2022–2025 |
 
 Test fixtures for `lib/calibration.py`:
 
 | stated | nfl → | cfb → |
 |---|---|---|
-| 0.50 | 0.532 | 0.468 |
-| 0.55 | 0.569 | 0.530 |
-| 0.60 | 0.606 | 0.592 |
-| 0.65 | 0.643 | 0.654 |
-| 0.70 | 0.681 | 0.715 |
-| 0.73 | 0.704 | 0.751 |
-| 0.80 | 0.761 | 0.830 |
-| 0.86 | 0.814 | 0.893 |
-| 0.90 | 0.853 | 0.931 |
+| 0.50 | 0.512 | 0.473 |
+| 0.55 | 0.552 | 0.532 |
+| 0.60 | 0.592 | 0.592 |
+| 0.65 | 0.632 | 0.652 |
+| 0.70 | 0.672 | 0.711 |
+| 0.73 | 0.698 | 0.745 |
+| 0.80 | 0.759 | 0.823 |
+| 0.86 | 0.815 | 0.886 |
+| 0.90 | 0.856 | 0.924 |
 
 `b < 1` compresses toward 0.5, `b > 1` expands away from it. The crossover — where the
-correction changes sign — is near 0.62 for NFL and 0.63 for CFB.
+correction changes sign — is **0.559** for NFL and **0.641** for CFB.
 
-### C.4 Caveats
+### C.4 Out-of-sample validation
 
-- Fitted on **two** backtested seasons. Corroborated by the live-market comparison in the
-  README (NFL more confident than the book, CFB less), but that is agreement on *sign*, not
-  an out-of-sample validation.
+The README's own next-step called for fitting on one set of seasons and validating on
+another, since fitting and measuring on the same seasons is just overfitting. Done both
+ways, scoring the held-out window's n-weighted log-likelihood against the uncorrected
+baseline:
+
+| league | fit window | held-out window | fitted a, b | Δ log-loss / game |
+|---|---|---|---|---|
+| nfl | 2022–2023 | 2024–2025 | +0.05*, 0.86 | **+0.00070** |
+| nfl | 2024–2025 | 2022–2023 | +0.13, 0.74 | **+0.00048** |
+| cfb | 2022–2023 | 2024–2025 | −0.08, 1.13 | **+0.00167** |
+| cfb | 2024–2025 | 2022–2023 | −0.13, 1.24 | **+0.00019** |
+
+\* fitted a = −0.03; the production coefficients come from the pooled fit, not either window.
+
+**Every direction improves, so the correction is real in sign — but read the magnitudes.**
+Against a base log-loss near 0.51–0.63 per game, these are gains of a fraction of a percent,
+and NFL's bucket-level Brier actually got *worse* out of sample in the forward direction.
+The slope is also unstable across windows for NFL (0.86 vs 0.74) and much steadier for CFB
+(1.13 vs 1.24) — consistent with CFB having 1851 hold-out games to NFL's 558, and with CFB
+being the only league with buckets past 2σ.
+
+**So this layer is a sizing correction, not a better model.** It is kept because a 3-point
+shift at p = 0.73 is most of a 5¢ edge threshold and Kelly amplifies exactly that, not
+because it forecasts better in any meaningful sense. Anyone reading it as model improvement
+is reading it wrong.
+
+Production coefficients are fitted on the **pooled** 2022–2025 buckets — the validation above
+establishes that the method generalises, and the pooled fit then uses all the data.
+
+### C.5 Caveats
 - Fitted on **bucket summaries**, not raw prediction pairs, because the backtest does not
   persist its replayed picks. Refitting from raw pairs would be strictly better; persisting
   them is a small change to `lib/backtest.py` and worth doing before the first refit.

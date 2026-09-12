@@ -100,3 +100,115 @@ CREATE TABLE IF NOT EXISTS prediction (
   UNIQUE (game_id, model)
 );
 CREATE INDEX IF NOT EXISTS ix_pred_graded ON prediction (correct);
+
+-- ---------------------------------------------------------------- betting --
+-- Phase 1: find mispriced contracts, size the bet, log and grade it. Execution
+-- stays manual, so nothing here places an order; these tables are the record.
+--
+-- Two more rules encoded rather than left to convention:
+--   3. A placed bet is immutable except for grading. Same reasoning as
+--      prediction: a ledger that can be edited after the fact is not a ledger.
+--   4. Probabilities are stored twice — as the model said them and as the
+--      calibration layer corrected them — so the correction can itself be
+--      graded rather than trusted.
+
+-- The bankroll is an append-only ledger and the balance is SUM(delta). A
+-- singleton row cannot represent a deposit, so it cannot produce a curve.
+CREATE TABLE IF NOT EXISTS bankroll_event (
+  id     INTEGER PRIMARY KEY,
+  ts     TEXT    NOT NULL,
+  delta  REAL    NOT NULL,
+  reason TEXT    NOT NULL,              -- deposit | withdrawal | settlement | correction
+  bet_id INTEGER REFERENCES bet(id),
+  note   TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_bankroll_ts ON bankroll_event (ts);
+
+-- Kalshi quotes get their own table: odds_snapshot stores American integers for
+-- a home/away pair and has nowhere to put a bid, an ask or open interest.
+-- Append-only for the same reason as odds_snapshot — movement is the signal.
+CREATE TABLE IF NOT EXISTS kalshi_snapshot (
+  id            INTEGER PRIMARY KEY,
+  game_id       INTEGER NOT NULL REFERENCES game(id),
+  team_id       INTEGER NOT NULL REFERENCES team(id),   -- the YES side
+  market_ticker TEXT    NOT NULL,
+  fetched_at    TEXT    NOT NULL,
+  yes_bid       REAL,
+  yes_ask       REAL,
+  mid           REAL,
+  open_interest REAL,
+  volume        REAL,
+  UNIQUE (market_ticker, fetched_at)
+);
+CREATE INDEX IF NOT EXISTS ix_kalshi_game ON kalshi_snapshot (game_id, fetched_at DESC);
+
+-- Kalshi's team abbreviation -> our team. Seeded once and asserted thereafter:
+-- an unresolved abbreviation is a stale alias table, which is a bug, not a
+-- market condition. Never match Kalshi's display names — they are truncated to
+-- 13 characters while a market is open ("New York G") and change format
+-- entirely once it settles ("CHI Bears").
+CREATE TABLE IF NOT EXISTS kalshi_alias (
+  league        TEXT    NOT NULL,
+  kalshi_abbrev TEXT    NOT NULL,
+  team_id       INTEGER NOT NULL REFERENCES team(id),
+  first_seen    TEXT    NOT NULL,
+  PRIMARY KEY (league, kalshi_abbrev)
+);
+
+CREATE TABLE IF NOT EXISTS bet (
+  id                INTEGER PRIMARY KEY,
+  placed_at         TEXT    NOT NULL,
+  league            TEXT    NOT NULL,
+  game_id           INTEGER NOT NULL REFERENCES game(id),
+  side_team_id      INTEGER NOT NULL REFERENCES team(id),
+  venue             TEXT    NOT NULL DEFAULT 'robinhood',
+  market_ticker     TEXT    NOT NULL,          -- the audit key back to Kalshi
+  contracts         INTEGER NOT NULL,
+  price             REAL    NOT NULL,          -- per contract, e.g. 0.64
+  fee_per_contract  REAL    NOT NULL,          -- realised, from fees.fee(price)
+  fee_model         TEXT    NOT NULL,          -- 'rh_kalshi_2026'
+  cost              REAL    NOT NULL,          -- contracts * (price + fee_per_contract)
+  model_prob_raw    REAL    NOT NULL,          -- prediction.win_prob, untouched
+  model_prob        REAL    NOT NULL,          -- calibrated; what edge and Kelly used
+  calib_model       TEXT    NOT NULL,          -- 'platt_backtest_2022_25'
+  -- NULL is honest here too: no line was observed, not no line existed.
+  market_prob       REAL,
+  edge              REAL    NOT NULL,          -- model_prob - price - fee_per_contract
+  kelly_full        REAL,
+  kelly_used        REAL,
+  -- The last mid strictly BEFORE kickoff. Never fetched at grade time: a
+  -- settled market quotes 0.99/0.01 with a 0.00/1.00 book, which would turn CLV
+  -- into a restatement of the win/loss record and a midpoint into a fake 0.50.
+  close_price       REAL,
+  close_snapshot_at TEXT,
+  status            TEXT    NOT NULL DEFAULT 'open',  -- open|won|lost|push|void
+  settlement_value  REAL,                      -- 1.0 | 0.0 | 0.5 tie | NULL while open
+  payout            REAL,
+  pnl               REAL,
+  settled_at        TEXT,
+  notes             TEXT    NOT NULL           -- news context at bet time (--ack-news)
+);
+CREATE INDEX IF NOT EXISTS ix_bet_status ON bet (status);
+CREATE INDEX IF NOT EXISTS ix_bet_game   ON bet (game_id);
+
+-- The bets NOT taken, and why. This is what makes the gates falsifiable: replay
+-- it against finals and the skip reasons can be graded like anything else.
+-- Written only when gate_result changes for a game, or the last row is 6h old —
+-- an unconditional write at polling cadence is ~14k near-identical rows a day.
+CREATE TABLE IF NOT EXISTS scan_log (
+  id             INTEGER PRIMARY KEY,
+  scanned_at     TEXT    NOT NULL,
+  league         TEXT    NOT NULL,
+  game_id        INTEGER NOT NULL REFERENCES game(id),
+  market_ticker  TEXT,
+  model_prob_raw REAL,
+  model_prob     REAL,                         -- calibrated
+  market_price   REAL,                         -- Kalshi ask at scan time
+  market_prob    REAL,                         -- DraftKings de-vigged, nullable
+  spread         REAL,
+  open_interest  REAL,
+  edge           REAL,
+  gate_result    TEXT    NOT NULL,             -- 'candidate' or a skip reason
+  acted          INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_scan_game ON scan_log (game_id, scanned_at);

@@ -295,6 +295,16 @@ renders on the repository page in any phone browser.
 
 Set them in `~/.config/gridiron/env` (mode 0600), which both systemd units read.
 
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
+Stdlib `unittest`, nothing to install. The pure functions — fees, calibration,
+sizing — use the spec's own fixture tables as their tests, so a number that
+changes in `docs/phase1-spec.md` without changing in the code fails the suite.
+
 ## Possible next steps
 
 1. **Swap the college source to CollegeFootballData.com.** ESPN's endpoints are
