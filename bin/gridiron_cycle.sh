@@ -30,6 +30,13 @@ else
 fi
 "$GI" predict
 
+# Settle any bet whose game has now finished. This runs after grade, so the
+# final score is already in, and before export so the record it publishes is
+# current. Kalshi quotes are captured separately by gridiron-poll.timer -- a
+# closing price cannot be recovered here, because a settled market quotes
+# 0.99/0.01 over a dead book.
+"$GI" bet grade || echo "bet grade failed; continuing"
+
 # Refresh the durable record and publish it. Only record/ is ever staged, so a
 # cycle cannot commit the database, the logs, or the token file. A failed push
 # leaves the commit in place rather than retrying blind.

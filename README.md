@@ -295,6 +295,48 @@ renders on the repository page in any phone browser.
 
 Set them in `~/.config/gridiron/env` (mode 0600), which both systemd units read.
 
+## Betting
+
+Decision support, not execution. The tool finds mispriced contracts, sizes them
+and grades what happened; the order is placed by hand in the app.
+
+```bash
+gridiron scan                 # what to bet, how much, and why everything else was skipped
+gridiron bet place <game_id> <team> --contracts N --price 0.56 \
+                   --ticker KXNFLGAME-... --ack-news "no late scratches"
+gridiron bet ledger           # record, P&L, ROI, CLV
+gridiron report movement      # is the model actually anticipating the market?
+gridiron bankroll history     # the cash curve
+```
+
+`--ack-news` is required and stored with the bet permanently. It exists to force
+the manual check that no model can do: late scratches, a quarterback ruled out,
+weather. Most of the traps this tool would otherwise walk into are news, not
+mispricing.
+
+Two timers keep it current. `gridiron-sync.timer` runs the daily cycle, which
+now settles finished bets. `gridiron-poll.timer` captures Kalshi quotes every
+fifteen minutes, and that one is not optional: a closing price cannot be
+recovered afterwards, because a settled market quotes 0.99/0.01 over a dead
+book. No poll before kickoff means no closing-line value, and CLV is the fastest
+honest test of whether any of this works.
+
+### Is it making money?
+
+Not yet established, and the tool is built to say so rather than imply
+otherwise. `report movement` measures whether the line moves toward the model
+after it disagrees with the opening number. As of 2026-09-12, over 114 games, it
+does — by 1.2 points, at three sigma. That is real anticipation.
+
+It is also nowhere near enough. The fee alone is 2-3c a contract and the edge
+gate is 5c, and the effect *decays* on the games the model feels strongest
+about, which are the only ones the gates would bet. More data will sharpen that
+estimate; it will not enlarge it.
+
+So the sizing stays locked at quarter-Kelly with a 5% cap until the criteria in
+`docs/phase1-spec.md` are met on real bets. The gate saying no is the gate
+working.
+
 ## Tests
 
 ```bash
