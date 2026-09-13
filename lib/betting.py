@@ -162,6 +162,7 @@ def performance(conn):
     clv = clv_values(conn)
     return {
         "open": sum(1 for r in rows if r["status"] == "open"),
+        "committed": committed(conn),
         "settled": len(settled),
         "won": sum(1 for r in settled if r["status"] == "won"),
         "lost": sum(1 for r in settled if r["status"] == "lost"),
@@ -177,6 +178,30 @@ def performance(conn):
         "clv_mean": (sum(clv) / len(clv)) if clv else 0.0,
         "clv_unlocked": clv_criterion_met(conn),
     }
+
+
+
+def open_positions(conn):
+    """(game_id, side_team_id) for every unsettled bet.
+
+    The scan needs this: without it the same candidate is proposed every run,
+    which is an instruction to double up on a position you already hold.
+    """
+    return {(r["game_id"], r["side_team_id"]) for r in conn.execute(
+        "SELECT game_id, side_team_id FROM bet WHERE status = 'open'").fetchall()}
+
+
+def committed(conn):
+    """Money sitting in unsettled bets.
+
+    Distinct from `staked`, which counts settled bets only. Reporting staked
+    alone next to a reduced bankroll reads as an error even when the bankroll is
+    correct, and the exposure cap is meaningless if it cannot see money already
+    at risk.
+    """
+    return conn.execute(
+        "SELECT COALESCE(SUM(cost), 0.0) AS c FROM bet WHERE status = 'open'"
+    ).fetchone()["c"]
 
 
 def ledger(conn, status=None):

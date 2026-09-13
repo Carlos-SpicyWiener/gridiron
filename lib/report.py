@@ -15,6 +15,7 @@ SKIP_REASON = {
     "no_quote": "no live book",
     "stake_below_one_contract": "stake too small for one contract",
     "exposure_capped": "would breach the 20% open-exposure cap",
+    "already_held": "you already hold this position",
     "price_disagrees_with_book": "Kalshi price is >15pts off the book - stale or mismapped",
 }
 
@@ -34,9 +35,11 @@ def scan_report(conn, bankroll, leagues=("nfl", "cfb")):
         for row in rows:
             (candidates if row.gate == "candidate" else skipped).append(row)
 
+    # Money already in open bets counts against the exposure cap; a cap that
+    # cannot see existing positions is not a cap.
     allocated = sizing.allocate(
         [{"c": c, "p": c.p_cal, "price": c.ask, "edge": c.edge} for c in candidates],
-        bankroll)
+        bankroll, open_exposure=betting.committed(conn))
 
     out = []
     out.append(f"BANKROLL ${bankroll:,.2f}   quarter-Kelly, 5% per bet, 20% total exposure")
@@ -113,7 +116,10 @@ def ledger_report(conn, open_only=False):
     record = f"{perf['won']}-{perf['lost']}" + (f"-{perf['push']}" if perf["push"] else "")
     out.append(f"    record        {record}   ({perf['settled']} settled, "
                f"{perf['open']} open)")
-    out.append(f"    staked        ${perf['staked']:,.2f}")
+    out.append(f"    staked        ${perf['staked']:,.2f}   (settled bets only)")
+    if perf["committed"]:
+        out.append(f"    committed     ${perf['committed']:,.2f}   "
+                   f"(in {perf['open']} open bet(s), not yet settled)")
     out.append(f"    returned      ${perf['returned']:,.2f}")
     out.append(f"    profit/loss   ${perf['pnl']:+,.2f}   ROI {perf['roi']:+.1%}")
     out.append(f"    bankroll      ${perf['balance']:,.2f}")

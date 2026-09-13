@@ -10,7 +10,7 @@ numerator of the stake, so the raw stated number would systematically mis-size.
 """
 import datetime as dt
 
-from . import calibration, db, fees, kalshi, sizing
+from . import betting, calibration, db, fees, kalshi, sizing
 
 MIN_EDGE = 0.05
 MAX_SPREAD = 0.04
@@ -95,7 +95,7 @@ def _rating_age_days(conn, team_id):
     return (dt.datetime.now(dt.timezone.utc) - computed).total_seconds() / 86400.0
 
 
-def evaluate(conn, league, game_id, ticker, pick_market, bankroll):
+def evaluate(conn, league, game_id, ticker, pick_market, bankroll, held=()):
     """Run every gate for one resolved game. Always returns a Candidate."""
     pred = _prediction(conn, game_id)
     if not pred:
@@ -130,8 +130,11 @@ def evaluate(conn, league, game_id, ticker, pick_market, bankroll):
     c.edge = p_cal - q.ask - float(fees.rate(q.ask))
     c.size = sizing.size(p_cal, q.ask, bankroll)
 
-    # Artifact filter first: these say the number itself is untrustworthy.
-    if pred["pick_tier"] == "other" or pred["opp_tier"] == "other":
+    # Already on it: proposing the same bet again is an instruction to double up.
+    if (game_id, pred["pick_team_id"]) in held:
+        c.gate = "already_held"
+    # Artifact filter next: these say the number itself is untrustworthy.
+    elif pred["pick_tier"] == "other" or pred["opp_tier"] == "other":
         c.gate = "fbs_vs_fcs"
     elif (_rating_age_days(conn, pred["pick_team_id"]) or 0) > STALE_RATING_DAYS:
         c.gate = "stale_rating"
@@ -163,6 +166,7 @@ def evaluate(conn, league, game_id, ticker, pick_market, bankroll):
 def scan(conn, league, bankroll):
     """Fetch live Kalshi markets, resolve them, and gate every one."""
     events = kalshi.by_event(kalshi.open_markets(league))
+    held = betting.open_positions(conn)
     out, unresolved = [], []
     for event_ticker, markets in events.items():
         if len(markets) != 2:
@@ -183,7 +187,8 @@ def scan(conn, league, bankroll):
         if pick_market is None:
             unresolved.append(event_ticker)
             continue
-        got = evaluate(conn, league, res.game_id, event_ticker, pick_market, bankroll)
+        got = evaluate(conn, league, res.game_id, event_ticker, pick_market,
+                       bankroll, held)
         if got:
             out.append(got)
     return out, unresolved
