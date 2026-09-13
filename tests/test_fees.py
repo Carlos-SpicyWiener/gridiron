@@ -1,4 +1,8 @@
-"""Per-contract fee on a Robinhood-routed Kalshi fill. Spec §3.4."""
+"""Per-order fee on a Robinhood-routed Kalshi fill. Spec §3.4.
+
+Calibrated against a real receipt, which is the only reason the numbers here can
+be trusted. See RealFills below.
+"""
 import os
 import sys
 import unittest
@@ -9,76 +13,95 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import fees
 
 
-class KalshiExchangeFee(unittest.TestCase):
-    """ceil(0.07 * P * (1-P) * 100) / 100 per contract, per side."""
+class RealFills(unittest.TestCase):
+    """Observed fills. Every other number in this module is theory; these are
+    receipts, and they are what the theory has to reproduce."""
 
-    def test_peaks_at_a_coin_flip(self):
-        # 0.07 * 0.25 = 0.0175 -> ceils to 2 cents
-        self.assertEqual(fees.kalshi_fee(D("0.50")), D("0.02"))
+    def test_seven_pittsburgh_contracts_at_78c_cost_9c_in_fees(self):
+        # 2026-09-13, Robinhood: basis $5.46, commissions and fees $0.09,
+        # total $5.55. This single fill is what proved the old per-contract
+        # rounding wrong -- it predicted $0.21.
+        self.assertEqual(fees.order_fee(D("0.78"), 7), D("0.09"))
 
-    def test_falls_to_one_cent_at_the_extremes(self):
-        # 0.07 * 0.10 * 0.90 = 0.0063 -> ceils to 1 cent
-        self.assertEqual(fees.kalshi_fee(D("0.10")), D("0.01"))
-        self.assertEqual(fees.kalshi_fee(D("0.90")), D("0.01"))
-
-    def test_rounds_up_never_down(self):
-        # 0.07 * 0.64 * 0.36 = 0.016128 -> 2 cents, not 1
-        self.assertEqual(fees.kalshi_fee(D("0.64")), D("0.02"))
+    def test_that_fill_totals_five_fifty_five(self):
+        self.assertEqual(fees.order_cost(D("0.78"), 7), D("5.55"))
 
 
-class RobinhoodCommission(unittest.TestCase):
-    """Probability-weighted, capped at a cent; half rate on Gold."""
+class OrderFee(unittest.TestCase):
+    """ceil(0.07 * contracts * P * (1-P)), rounded once on the ORDER."""
 
-    def test_capped_at_one_cent(self):
-        # 0.10 * 0.25 = 0.025, above the cap
-        self.assertEqual(fees.rh_commission(D("0.50")), D("0.01"))
+    def test_rounds_once_for_the_whole_order_not_once_per_contract(self):
+        # 0.07 * 10 * 0.5 * 0.5 = 0.175 -> 18c for the order.
+        # Per-contract rounding would give 2c x 10 = 20c.
+        self.assertEqual(fees.order_fee(D("0.50"), 10), D("0.18"))
 
-    def test_still_a_cent_once_rounded_up_at_the_extremes(self):
-        # 0.10 * 0.01 * 0.99 = 0.00099 -> ceils to 1 cent
-        self.assertEqual(fees.rh_commission(D("0.01")), D("0.01"))
+    def test_a_single_contract_still_rounds_up_to_a_cent(self):
+        self.assertEqual(fees.order_fee(D("0.50"), 1), D("0.02"))
 
-    def test_gold_uses_half_the_rate_but_the_same_cap(self):
-        self.assertEqual(fees.rh_commission(D("0.50"), gold=True), D("0.01"))
+    def test_costs_less_per_contract_at_the_extremes(self):
+        cheap = fees.order_fee(D("0.90"), 100) / 100
+        dear = fees.order_fee(D("0.50"), 100) / 100
+        self.assertLess(cheap, dear)
 
-
-class TotalFee(unittest.TestCase):
-    """Spec §3.4's table. This is the contract the edge engine depends on."""
-
-    TABLE = {
-        "0.10": "0.02",
-        "0.25": "0.03",
-        "0.40": "0.03",
-        "0.50": "0.03",
-        "0.64": "0.03",
-        "0.75": "0.03",
-        "0.90": "0.02",
-    }
-
-    def test_matches_the_spec_table(self):
-        for price, expected in sorted(self.TABLE.items()):
-            with self.subTest(price=price):
-                self.assertEqual(fees.fee(D(price)), D(expected))
-
-    def test_is_three_cents_across_the_whole_middle(self):
-        """The plateau is the point: a 5c gross edge is 60% fee in the middle."""
-        p = D("0.20")
-        while p <= D("0.80"):
-            with self.subTest(price=str(p)):
-                self.assertEqual(fees.fee(p), D("0.03"))
-            p += D("0.01")
-
-    def test_never_returns_a_float(self):
-        """Float rounding at cent granularity is exactly where a 5c gate goes wrong."""
-        self.assertIsInstance(fees.fee(D("0.64")), D)
-
-    def test_accepts_a_string_price_because_the_api_returns_strings(self):
-        self.assertEqual(fees.fee("0.64"), D("0.03"))
+    def test_no_contracts_no_fee(self):
+        self.assertEqual(fees.order_fee(D("0.50"), 0), D("0.00"))
 
     def test_rejects_a_price_outside_zero_to_one(self):
         for bad in ("-0.01", "1.01"):
             with self.subTest(price=bad):
                 with self.assertRaises(ValueError):
-                    fees.fee(bad)
+                    fees.order_fee(bad, 10)
+
+
+class MarginalRate(unittest.TestCase):
+    """What the gate and the sizer should charge: the unrounded rate.
+
+    Rounding is a sub-cent artifact spread across the order, so pricing a
+    decision off the rounded-up figure of a hypothetical one-contract order
+    overstates cost by more than the fee itself.
+    """
+
+    def test_is_the_unrounded_kalshi_rate(self):
+        self.assertAlmostEqual(float(fees.rate(D("0.50"))), 0.0175, places=6)
+        self.assertAlmostEqual(float(fees.rate(D("0.78"))), 0.012012, places=6)
+
+    def test_is_far_below_the_old_flat_three_cents(self):
+        """The bug that mattered: 3c assumed, 1.3c real, every edge understated."""
+        self.assertLess(float(fees.rate(D("0.78"))), 0.02)
+
+    def test_peaks_at_a_coin_flip(self):
+        self.assertGreater(fees.rate(D("0.50")), fees.rate(D("0.30")))
+        self.assertGreater(fees.rate(D("0.50")), fees.rate(D("0.70")))
+
+    def test_approaches_the_realised_per_contract_fee_on_a_large_order(self):
+        realised = fees.order_fee(D("0.64"), 1000) / 1000
+        self.assertAlmostEqual(float(realised), float(fees.rate(D("0.64"))), places=4)
+
+
+class RobinhoodCommission(unittest.TestCase):
+    """Observed as zero. Kept as a knob because it is a business decision that
+    can change, and a fee model that cannot be corrected is a liability."""
+
+    def test_defaults_to_zero_because_that_is_what_the_receipt_showed(self):
+        self.assertEqual(fees.rh_commission(D("0.78"), 7), D("0.00"))
+
+    def test_can_be_switched_back_on_if_they_start_charging(self):
+        self.assertEqual(fees.rh_commission(D("0.78"), 7, per_contract=D("0.01")),
+                         D("0.07"))
+
+    def test_a_commission_shows_up_in_the_order_fee(self):
+        self.assertEqual(fees.order_fee(D("0.78"), 7, rh_per_contract=D("0.01")),
+                         D("0.16"))
+
+
+class Types(unittest.TestCase):
+
+    def test_never_returns_a_float(self):
+        self.assertIsInstance(fees.order_fee(D("0.64"), 10), D)
+        self.assertIsInstance(fees.rate(D("0.64")), D)
+
+    def test_accepts_a_string_price_because_the_api_returns_strings(self):
+        self.assertEqual(fees.order_fee("0.78", 7), D("0.09"))
 
 
 if __name__ == "__main__":

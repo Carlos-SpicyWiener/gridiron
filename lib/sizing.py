@@ -49,10 +49,9 @@ class Size:
                 f"contracts={self.contracts}{', capped' if self.capped else ''})")
 
 
-def size(p, price, bankroll, multiplier=KELLY_MULTIPLIER, max_stake_pct=MAX_STAKE_PCT,
-         gold=False):
+def size(p, price, bankroll, multiplier=KELLY_MULTIPLIER, max_stake_pct=MAX_STAKE_PCT):
     """Stake and contract count for one candidate. Never returns a negative stake."""
-    fee = float(fees.fee(price, gold))
+    fee = float(fees.rate(price))
     all_in = price + fee
     edge = p - all_in
 

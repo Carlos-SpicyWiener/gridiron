@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS bet (
   contracts         INTEGER NOT NULL,
   price             REAL    NOT NULL,             -- per contract, e.g. 0.64
   fee_per_contract  REAL    NOT NULL,             -- realised, from fee(price); no default
-  fee_model         TEXT    NOT NULL,             -- 'rh_kalshi_2026' (§3.4)
+  fee_model         TEXT    NOT NULL,             -- 'rh_kalshi_2026_order' (§3.4)
   cost              REAL    NOT NULL,             -- contracts * (price + fee_per_contract)
   model_prob_raw    REAL    NOT NULL,             -- prediction.win_prob, untouched
   model_prob        REAL    NOT NULL,             -- CALIBRATED (§4.0); what edge and Kelly use
@@ -292,25 +292,40 @@ Kalshi's published taker fee is `ceil(0.07 × P × (1−P) × 100)/100` per cont
 parabola peaking at 50¢ — and Robinhood adds its own commission (probability-weighted since
 2026-06-01, 10% standard / 5% Gold, capped at $0.01/contract).
 
+> **Corrected 2026-09-13 against a real fill.** The version below replaces a
+> per-contract rounding model that overstated cost by 1.7c/contract and
+> therefore understated every edge. See "calibration" at the end of this section.
+
 ```python
 from decimal import Decimal, ROUND_CEILING
 
 CENT = Decimal("0.01")
+KALSHI_RATE = Decimal("0.07")
+RH_PER_CONTRACT = Decimal("0.00")           # observed zero; kept configurable
 
-def kalshi_fee(price):
-    return (Decimal("0.07") * price * (1 - price)).quantize(CENT, ROUND_CEILING)
+def rate(price):
+    """Unrounded per-contract rate. What the gate and Kelly charge."""
+    return KALSHI_RATE * price * (1 - price)
 
-def rh_commission(price, gold=False):
-    rate = Decimal("0.05") if gold else Decimal("0.10")
-    return min(rate * price * (1 - price), CENT).quantize(CENT, ROUND_CEILING)
-
-def fee(price, gold=False):                 # fee_model = 'rh_kalshi_2026'
-    return kalshi_fee(price) + rh_commission(price, gold)
+def order_fee(price, contracts):            # fee_model = 'rh_kalshi_2026_order'
+    """Charged once on the ORDER, rounded up to the cent once."""
+    return ((rate(price) * contracts).quantize(CENT, ROUND_CEILING)
+            + (RH_PER_CONTRACT * contracts).quantize(CENT, ROUND_CEILING))
 ```
+
+Two numbers, and conflating them is what went wrong the first time:
+
+| | use it for |
+|---|---|
+| `order_fee(price, n)` | cost, P&L, the bankroll — what you are actually charged |
+| `rate(price)` | the edge gate and Kelly — the marginal per-contract cost |
+
+Rounding is an order-level artifact. Pricing a *decision* off the rounded-up fee
+of a hypothetical one-contract order overstates the cost by more than the cost.
 
 | price | 0.10 | 0.25 | 0.40 | 0.50 | 0.64 | 0.75 | 0.90 |
 |---|---|---|---|---|---|---|---|
-| **fee** | 0.02 | 0.03 | 0.03 | 0.03 | 0.03 | 0.03 | 0.02 |
+| **rate (c/contract)** | 0.63 | 1.31 | 1.68 | 1.75 | 1.61 | 1.31 | 0.63 |
 
 A 5¢ gross edge is therefore **40–60% fee**, worst in the middle of the range where the model
 has least to say. v1's flat `0.01` understates cost by 2–3×.
@@ -318,9 +333,24 @@ has least to say. v1's flat `0.01` understates cost by 2–3×.
 Use `Decimal` end to end — the API returns prices as strings and float rounding at cent
 granularity is exactly where a 5¢ threshold goes wrong.
 
-**Calibrate against reality.** An order preview showing a cost basis exactly equal to
-contracts × price is a *cost basis* display, not the debit. Reconcile against a monthly statement before trusting any P&L; that
-is what `fee_model` is for, so a recalibration can be applied retroactively.
+**Calibration — done, and it found the bug.** First real fill, 2026-09-13:
+**7 contracts of PITT at 78c — basis $5.46, commissions and fees $0.09, total $5.55.**
+
+`ceil(0.07 x 7 x 0.78 x 0.22) = ceil(8.4084c) = $0.09`, matching to the cent, with
+nothing left over for Robinhood. So two corrections at once:
+
+- **Rounding is per order, not per contract.** The original model charged
+  `ceil(0.07 x P x (1-P))` per contract, turning a $0.09 fee into $0.21.
+- **Robinhood's commission is zero**, not the $0.01/contract published sources
+  claimed. The receipt wins; it stays a parameter because that can change.
+
+Net effect: cost overstated by 1.7c/contract, so every edge was *understated* by
+the same amount. At a 5c gate, candidates scoring between roughly 3.3c and 5c
+were being skipped as `thin_edge` when they should have cleared.
+
+Storing `fee_model` on every bet row is what made this fixable in place: bet 1
+was restated from $5.67 to $5.55 and the 12c difference booked as a `correction`
+event rather than the original entry being erased.
 
 ### 3.5 Reading prices, and the closing price
 

@@ -1,33 +1,39 @@
-"""What a contract actually costs, which is not what the price says.
+"""What a contract actually costs, calibrated against a real receipt.
 
-Two fees stack on a Robinhood-routed Kalshi fill: Kalshi's exchange fee, which is
-a parabola peaking at 50c, and Robinhood's own commission on top. Both round UP
-to the cent per contract, and that rounding is what matters — it flattens the
-parabola into a plateau of 3c across the whole middle of the price range.
+Kalshi's fee is `ceil(0.07 * contracts * P * (1-P))`, and the rounding happens
+ONCE ON THE ORDER. That detail is the whole of this module. Rounding each
+contract up to a cent instead -- which is what the first version of this did --
+turned a real $0.09 fee on seven contracts at 78c into a modelled $0.21, and
+every edge computed from it was understated by 1.7c per contract. At a 5c gate
+that silently skipped bets that should have cleared.
 
-A 5c gross edge is therefore 40-60% fee, worst exactly where the model has least
-to say. Treating the fee as a flat cent understates cost by 2-3x and turns a
-losing bet into a winning-looking one.
+Robinhood's commission was observed as ZERO on that fill: the $0.09 charged is
+exactly Kalshi's order fee with nothing left over. Published sources claimed
+$0.01/contract. The receipt wins. It stays a parameter because it is a business
+decision that can change without notice, and a bet's realised fee is stored on
+its row so a recalibration can be applied to history.
 
-Decimal throughout, never float. The API quotes prices as strings and the gate
-compares against a 5c threshold; binary floating point at cent granularity is
-precisely where that comparison goes wrong.
+Two different numbers, and conflating them is the trap:
+
+  order_fee  what you are actually charged, rounded, for a specific order size.
+             Use it for cost, P&L and the bankroll.
+
+  rate       the unrounded marginal rate, 0.07 * P * (1-P). Use it for the edge
+             gate and for Kelly. Sizing decisions must not be priced off the
+             rounded-up fee of a hypothetical one-contract order -- at 78c that
+             overstates the true cost by more than the cost itself.
 """
 from decimal import Decimal, ROUND_CEILING
 
 CENT = Decimal("0.01")
 
-# Kalshi's published taker rate. Fee is rate * P * (1-P) per contract, per side.
+# Kalshi's published taker rate, applied to the notional of the whole order.
 KALSHI_RATE = Decimal("0.07")
 
-# Robinhood's commission is probability-weighted and capped at a cent per
-# contract; Gold halves the rate but not the cap. Calibrate against a statement
-# rather than an order preview — the preview shows cost basis, not the debit.
-RH_RATE = Decimal("0.10")
-RH_RATE_GOLD = Decimal("0.05")
-RH_CAP = CENT
+# Observed zero on the 2026-09-13 fill. Left configurable rather than removed.
+RH_PER_CONTRACT = Decimal("0.00")
 
-MODEL = "rh_kalshi_2026"
+MODEL = "rh_kalshi_2026_order"
 
 
 def _price(value):
@@ -38,19 +44,43 @@ def _price(value):
     return p
 
 
-def kalshi_fee(price):
-    """Kalshi's exchange fee for one contract, rounded up to the cent."""
+def rate(price):
+    """Unrounded fee per contract. What the gate and the sizer should charge."""
     p = _price(price)
-    return (KALSHI_RATE * p * (1 - p)).quantize(CENT, ROUND_CEILING)
+    return KALSHI_RATE * p * (1 - p)
 
 
-def rh_commission(price, gold=False):
-    """Robinhood's commission for one contract, rounded up to the cent."""
-    p = _price(price)
-    rate = RH_RATE_GOLD if gold else RH_RATE
-    return min(rate * p * (1 - p), RH_CAP).quantize(CENT, ROUND_CEILING)
+def kalshi_fee(price, contracts):
+    """Kalshi's fee for the whole order, rounded up to the cent once."""
+    if contracts <= 0:
+        return Decimal("0.00")
+    return (rate(price) * contracts).quantize(CENT, ROUND_CEILING)
 
 
-def fee(price, gold=False):
-    """Total cost per contract on top of the price itself."""
-    return kalshi_fee(price) + rh_commission(price, gold)
+def rh_commission(price, contracts, per_contract=None):
+    """Robinhood's commission for the order. Zero as observed."""
+    if contracts <= 0:
+        return Decimal("0.00")
+    _price(price)
+    per = RH_PER_CONTRACT if per_contract is None else per_contract
+    return (per * contracts).quantize(CENT, ROUND_CEILING)
+
+
+def order_fee(price, contracts, rh_per_contract=None):
+    """Total fees charged on one order."""
+    return kalshi_fee(price, contracts) + rh_commission(price, contracts, rh_per_contract)
+
+
+def order_cost(price, contracts, rh_per_contract=None):
+    """Everything that leaves the account: contracts plus fees."""
+    if contracts <= 0:
+        return Decimal("0.00")
+    notional = (_price(price) * contracts).quantize(CENT)
+    return notional + order_fee(price, contracts, rh_per_contract)
+
+
+def realised_per_contract(price, contracts, rh_per_contract=None):
+    """The fee actually borne by each contract, for storing on the bet row."""
+    if contracts <= 0:
+        return Decimal("0.00")
+    return order_fee(price, contracts, rh_per_contract) / contracts

@@ -117,9 +117,10 @@ class CashLedger(LedgerTestCase):
         g = self._game(home_score=24, away_score=10, status="final")
         self._bet(g, self.home, contracts=10, price=0.60)
         betting.grade(self.conn)
+        # order_cost(0.60, 10) = 6.00 notional + 0.17 fee
         self.assertAlmostEqual(
             self.conn.execute("SELECT SUM(delta) AS d FROM bankroll_event").fetchone()["d"],
-            10.0 - 10 * 0.63, places=6)
+            10.0 - 6.17, places=6)
 
     def test_a_deposit_survives_in_the_curve(self):
         """The reason a singleton balance row cannot produce a bankroll curve."""
@@ -149,11 +150,11 @@ class Performance(LedgerTestCase):
         self.assertEqual((perf["won"], perf["lost"], perf["push"]), (2, 1, 0))
 
     def test_roi_is_profit_over_money_staked(self):
-        self._settled(True, contracts=10, price=0.60)   # cost 6.30, payout 10
+        self._settled(True, contracts=10, price=0.60)   # cost 6.17, payout 10
         perf = betting.performance(self.conn)
-        self.assertAlmostEqual(perf["staked"], 6.30, places=6)
-        self.assertAlmostEqual(perf["pnl"], 3.70, places=6)
-        self.assertAlmostEqual(perf["roi"], 3.70 / 6.30, places=6)
+        self.assertAlmostEqual(perf["staked"], 6.17, places=6)
+        self.assertAlmostEqual(perf["pnl"], 3.83, places=6)
+        self.assertAlmostEqual(perf["roi"], 3.83 / 6.17, places=6)
 
     def test_open_bets_are_counted_but_not_scored(self):
         self._game()

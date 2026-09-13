@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lib import sizing
+from lib import fees, sizing
 
 BR = 1000.0  # illustrative; every assertion below is really about fractions
 
@@ -18,11 +18,11 @@ class KellyFraction(unittest.TestCase):
     # kelly makes a fixture that never reproduces.
     CASES = [
         # label,               p,     price, kelly_full, stake_pct, contracts_per_1k
-        ("uncalibrated 0.73", 0.730, 0.64, 0.1818182, 0.045455, 67),
-        ("calibrated 0.73",   0.698, 0.64, 0.0848485, 0.021212, 31),
-        ("DEN @ KC",          0.592, 0.45, 0.2153846, 0.050000, 104),
-        ("DAL @ NYG",         0.512, 0.40, 0.1438596, 0.035965, 83),
-        ("small stake",       0.560, 0.50, 0.0638298, 0.015957, 30),
+        ("uncalibrated 0.73", 0.730, 0.64, 0.2148241, 0.050000, 76),
+        ("calibrated 0.73",   0.698, 0.64, 0.1217662, 0.030442, 46),
+        ("DEN @ KC",          0.592, 0.45, 0.2340545, 0.050000, 106),
+        ("DAL @ NYG",         0.512, 0.40, 0.1632373, 0.040809, 97),
+        ("small stake",       0.560, 0.50, 0.0880829, 0.022021, 42),
     ]
 
     def test_matches_the_spec_fixture_table(self):
@@ -33,11 +33,12 @@ class KellyFraction(unittest.TestCase):
                 self.assertAlmostEqual(got.stake / BR, stake_pct, places=6)
                 self.assertEqual(got.contracts, contracts)
 
-    def test_charges_the_fee_in_the_denominator_too(self):
-        """Kelly is on what you pay, not on the quoted price."""
+    def test_charges_the_marginal_fee_in_the_denominator_too(self):
+        """Kelly is on what you pay -- and on the UNROUNDED rate, because
+        rounding is an order-level artifact, not a per-contract cost."""
         got = sizing.size(0.73, 0.64, BR)
-        # all_in = 0.64 + 0.03; ignoring the fee would give 0.1818 -> 0.25
-        self.assertAlmostEqual(got.all_in, 0.67, places=6)
+        self.assertAlmostEqual(got.fee, float(fees.rate(0.64)), places=9)
+        self.assertAlmostEqual(got.all_in, 0.64 + float(fees.rate(0.64)), places=9)
         self.assertNotAlmostEqual(got.kelly_full, 0.25, places=2)
 
 
@@ -53,9 +54,8 @@ class Caps(unittest.TestCase):
         self.assertFalse(got.capped)
 
     def test_at_the_edge_floor_the_cap_only_catches_heavy_favourites(self):
-        """Spec §5: crossover near c = 0.73."""
-        below = sizing.size(0.65 + 0.03 + 0.05, 0.65, BR)
-        above = sizing.size(0.80 + 0.03 + 0.05, 0.80, BR)
+        below = sizing.size(0.65 + float(fees.rate(0.65)) + 0.05, 0.65, BR)
+        above = sizing.size(0.80 + float(fees.rate(0.80)) + 0.05, 0.80, BR)
         self.assertFalse(below.capped)
         self.assertTrue(above.capped)
 
@@ -113,7 +113,9 @@ class Allocation(unittest.TestCase):
             {"id": "big", "p": 0.606, "price": 0.45, "edge": 0.126},
             {"id": "small", "p": 0.56, "price": 0.50, "edge": 0.03},
         ]
-        filled = sizing.allocate(cands, BR, open_exposure=BR * 0.18)
+        # headroom $30: the big candidate wants $50 and cannot fit, the small
+        # one wants ~$22 and can.
+        filled = sizing.allocate(cands, BR, open_exposure=BR * 0.17)
         by_id = {c["id"]: c for c in filled}
         self.assertEqual(by_id["big"]["gate_result"], "exposure_capped")
         self.assertGreater(by_id["small"]["contracts"], 0)

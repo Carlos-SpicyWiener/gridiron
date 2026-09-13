@@ -125,7 +125,9 @@ def evaluate(conn, league, game_id, ticker, pick_market, bankroll):
         c.gate = "no_quote"
         return c
 
-    c.edge = p_cal - q.ask - float(fees.fee(q.ask))
+    # Marginal rate, not order_fee: the gate is a per-contract decision and
+    # rounding is a sub-cent artifact spread across whatever size you buy.
+    c.edge = p_cal - q.ask - float(fees.rate(q.ask))
     c.size = sizing.size(p_cal, q.ask, bankroll)
 
     # Artifact filter first: these say the number itself is untrustworthy.

@@ -28,12 +28,14 @@ MIN_CLV_BETS = 20
 
 def record_bet(conn, league, game_id, side_team_id, market_ticker, contracts, price,
                model_prob_raw, model_prob, notes, market_prob=None, provenance=SIZED,
-               close_price=None, close_snapshot_at=None, venue="robinhood", gold=False):
+               close_price=None, close_snapshot_at=None, venue="robinhood"):
     """Insert one bet. Immutable afterwards except for the grading columns."""
     if provenance not in PROVENANCE:
         raise ValueError(f"provenance must be one of {PROVENANCE}, got {provenance!r}")
 
-    fee = float(fees.fee(price, gold))
+    # The ledger books the real receipt: fees round once on the order.
+    fee = float(fees.realised_per_contract(price, contracts))
+    cost = float(fees.order_cost(price, contracts))
     sized = sizing.size(model_prob, price, 0.0)  # bankroll-independent parts only
     cur = conn.execute(
         "INSERT INTO bet (placed_at, league, game_id, side_team_id, venue, market_ticker, "
@@ -42,7 +44,7 @@ def record_bet(conn, league, game_id, side_team_id, market_ticker, contracts, pr
         "status, notes, provenance) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)",
         (db.now(), league, game_id, side_team_id, venue, market_ticker, contracts, price,
-         fee, fees.MODEL, contracts * (price + fee), model_prob_raw, model_prob,
+         fee, fees.MODEL, cost, model_prob_raw, model_prob,
          calibration.MODEL, market_prob, model_prob - price - fee,
          sized.kelly_full or None, close_price, close_snapshot_at, notes, provenance))
     bet_id = cur.lastrowid
@@ -51,7 +53,7 @@ def record_bet(conn, league, game_id, side_team_id, market_ticker, contracts, pr
     conn.execute(
         "INSERT INTO bankroll_event (ts, delta, reason, bet_id, note) "
         "VALUES (?, ?, 'stake', ?, ?)",
-        (db.now(), -contracts * (price + fee), bet_id,
+        (db.now(), -cost, bet_id,
          f"{contracts} @ {price:.2f} {market_ticker}"))
     conn.commit()
     return bet_id
