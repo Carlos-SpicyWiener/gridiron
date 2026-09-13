@@ -45,8 +45,136 @@ def record_bet(conn, league, game_id, side_team_id, market_ticker, contracts, pr
          fee, fees.MODEL, contracts * (price + fee), model_prob_raw, model_prob,
          calibration.MODEL, market_prob, model_prob - price - fee,
          sized.kelly_full or None, close_price, close_snapshot_at, notes, provenance))
+    bet_id = cur.lastrowid
+    # The bankroll is a cash account: the stake leaves it now, the payout (if
+    # any) returns at settlement. Netting them would lose the curve in between.
+    conn.execute(
+        "INSERT INTO bankroll_event (ts, delta, reason, bet_id, note) "
+        "VALUES (?, ?, 'stake', ?, ?)",
+        (db.now(), -contracts * (price + fee), bet_id,
+         f"{contracts} @ {price:.2f} {market_ticker}"))
     conn.commit()
-    return cur.lastrowid
+    return bet_id
+
+
+def deposit(conn, amount, note=""):
+    """Money in or out of the account. Negative is a withdrawal."""
+    conn.execute(
+        "INSERT INTO bankroll_event (ts, delta, reason, note) VALUES (?, ?, ?, ?)",
+        (db.now(), amount, "deposit" if amount >= 0 else "withdrawal", note))
+    conn.commit()
+
+
+def balance(conn):
+    return conn.execute(
+        "SELECT COALESCE(SUM(delta), 0.0) AS b FROM bankroll_event").fetchone()["b"]
+
+
+def bankroll_curve(conn):
+    """Running balance after every cash event, which is what a curve needs."""
+    running, out = 0.0, []
+    for row in conn.execute(
+            "SELECT ts, delta, reason, bet_id, note FROM bankroll_event "
+            "ORDER BY id").fetchall():
+        running += row["delta"]
+        out.append({"ts": row["ts"], "delta": row["delta"], "reason": row["reason"],
+                    "bet_id": row["bet_id"], "balance": running})
+    return out
+
+
+def _settlement(bet, game):
+    """1.0 win, 0.0 loss, 0.5 tie. Kalshi resolves a tie to 50c a side.
+
+    prediction.correct scores a tie as a loss, which is defensible for a pick
+    record and simply wrong for money.
+    """
+    home, away = game["home_score"], game["away_score"]
+    if home is None or away is None:
+        return None
+    if home == away:
+        return 0.5
+    winner = game["home_team_id"] if home > away else game["away_team_id"]
+    return 1.0 if winner == bet["side_team_id"] else 0.0
+
+
+STATUS = {1.0: "won", 0.0: "lost", 0.5: "push"}
+
+
+def grade(conn):
+    """Settle every open bet whose game has finished. Idempotent."""
+    rows = conn.execute(
+        "SELECT b.*, g.home_score, g.away_score, g.home_team_id, g.away_team_id, "
+        "       g.status AS game_status, g.kickoff_utc "
+        "FROM bet b JOIN game g ON g.id = b.game_id "
+        "WHERE b.status = 'open' AND g.status = 'final'").fetchall()
+    settled = 0
+    for bet in rows:
+        value = _settlement(bet, bet)
+        if value is None:
+            continue
+        payout = bet["contracts"] * value
+        close, close_at = _close_from_snapshots(conn, bet)
+        conn.execute(
+            "UPDATE bet SET status = ?, settlement_value = ?, payout = ?, pnl = ?, "
+            "settled_at = ?, close_price = COALESCE(close_price, ?), "
+            "close_snapshot_at = COALESCE(close_snapshot_at, ?) WHERE id = ?",
+            (STATUS[value], value, payout, payout - bet["cost"], db.now(),
+             close, close_at, bet["id"]))
+        if payout:
+            conn.execute(
+                "INSERT INTO bankroll_event (ts, delta, reason, bet_id, note) "
+                "VALUES (?, ?, 'settlement', ?, ?)",
+                (db.now(), payout, bet["id"], STATUS[value]))
+        else:
+            conn.execute(
+                "INSERT INTO bankroll_event (ts, delta, reason, bet_id, note) "
+                "VALUES (?, 0.0, 'settlement', ?, 'lost')", (db.now(), bet["id"]))
+        settled += 1
+    conn.commit()
+    return settled
+
+
+def _close_from_snapshots(conn, bet):
+    """The last mid strictly BEFORE kickoff.
+
+    Never the API at grade time: a settled market quotes 0.99/0.01 over a
+    0.00/1.00 book, which would turn CLV into a restatement of the win/loss
+    record and a midpoint into a plausible fake 0.50.
+    """
+    row = conn.execute(
+        "SELECT k.mid, k.fetched_at FROM kalshi_snapshot k "
+        "JOIN game g ON g.id = k.game_id "
+        "WHERE k.game_id = ? AND k.team_id = ? AND k.fetched_at < g.kickoff_utc "
+        "ORDER BY k.fetched_at DESC LIMIT 1", (bet["game_id"], bet["side_team_id"])
+    ).fetchone()
+    return (row["mid"], row["fetched_at"]) if row else (None, None)
+
+
+def performance(conn):
+    """The portfolio: record, money, and how the sized pool did on its own."""
+    rows = ledger(conn)
+    settled = [r for r in rows if r["status"] in ("won", "lost", "push")]
+    staked = sum(r["cost"] for r in settled)
+    pnl = sum(r["pnl"] or 0.0 for r in settled)
+    sized = [r for r in settled if r["provenance"] == SIZED]
+    clv = clv_values(conn)
+    return {
+        "open": sum(1 for r in rows if r["status"] == "open"),
+        "settled": len(settled),
+        "won": sum(1 for r in settled if r["status"] == "won"),
+        "lost": sum(1 for r in settled if r["status"] == "lost"),
+        "push": sum(1 for r in settled if r["status"] == "push"),
+        "staked": staked,
+        "returned": sum(r["payout"] or 0.0 for r in settled),
+        "pnl": pnl,
+        "roi": (pnl / staked) if staked else 0.0,
+        "sized_settled": len(sized),
+        "sized_pnl": sum(r["pnl"] or 0.0 for r in sized),
+        "balance": balance(conn),
+        "clv_n": len(clv),
+        "clv_mean": (sum(clv) / len(clv)) if clv else 0.0,
+        "clv_unlocked": clv_criterion_met(conn),
+    }
 
 
 def ledger(conn, status=None):

@@ -17,7 +17,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lib import backtest, db, elo, espn, exporter, odds, picks  # noqa: E402
+from lib import (backtest, betting, db, elo, engine, espn, exporter,  # noqa: E402
+                 odds, picks, report)
 
 LEAGUES = ("nfl", "cfb")
 
@@ -246,6 +247,90 @@ def cmd_status(args):
     conn.close()
 
 
+
+# ------------------------------------------------------------------ betting --
+def cmd_scan(args):
+    """What to bet, how much, and why everything else was skipped."""
+    conn = db.connect(readonly=True)
+    bankroll = args.bankroll if args.bankroll is not None else betting.balance(conn)
+    if bankroll <= 0:
+        say("bankroll is zero — set one with `gridiron bankroll deposit <amount>`, "
+            "or pass --bankroll to price a hypothetical")
+        return 1
+    say(report.scan_report(conn, bankroll, leagues_from(args.league)))
+    conn.close()
+    return 0
+
+
+def cmd_bet_place(args):
+    conn = db.connect()
+    pred = conn.execute(
+        "SELECT p.pick_team_id, p.win_prob, p.market_prob, p.market_pick_team_id, g.league "
+        "FROM prediction p JOIN game g ON g.id = p.game_id WHERE p.game_id = ?",
+        (args.game_id,)).fetchone()
+    if not pred:
+        say(f"no open prediction for game {args.game_id}")
+        return 1
+    team = conn.execute(
+        "SELECT id, name FROM team WHERE id = ? OR abbrev = ? OR name = ?",
+        (args.team, args.team, args.team)).fetchone()
+    if not team:
+        say(f"no team matching {args.team!r}")
+        return 1
+    market_prob = pred["market_prob"]
+    if market_prob is not None and pred["market_pick_team_id"] not in (None, team["id"]):
+        market_prob = 1.0 - market_prob
+    bet_id = betting.record_bet(
+        conn, league=pred["league"], game_id=args.game_id, side_team_id=team["id"],
+        market_ticker=args.ticker, contracts=args.contracts, price=args.price,
+        model_prob_raw=pred["win_prob"],
+        model_prob=calibrated(pred["win_prob"], pred["league"]),
+        market_prob=market_prob, notes=args.ack_news, provenance=args.provenance)
+    say(f"bet {bet_id}: {args.contracts} x {team['name']} @ {args.price:.2f} "
+        f"({args.provenance}); bankroll now ${betting.balance(conn):,.2f}")
+    conn.close()
+    return 0
+
+
+def calibrated(p, league):
+    from lib import calibration
+    return calibration.calibrate(p, league)
+
+
+def cmd_bet_grade(args):
+    conn = db.connect()
+    n = betting.grade(conn)
+    say(f"settled {n} bet(s); bankroll now ${betting.balance(conn):,.2f}")
+    conn.close()
+    return 0
+
+
+def cmd_bet_ledger(args):
+    conn = db.connect(readonly=True)
+    say(report.ledger_report(conn, open_only=args.open))
+    conn.close()
+    return 0
+
+
+def cmd_bankroll(args):
+    conn = db.connect()
+    if args.action == "show":
+        say(f"${betting.balance(conn):,.2f}")
+    elif args.action == "history":
+        for row in betting.bankroll_curve(conn):
+            say(f"  {row['ts']}  {row['delta']:+9.2f}  {row['balance']:9.2f}  "
+                f"{row['reason']}")
+    else:
+        if args.amount is None:
+            say(f"{args.action} needs an amount")
+            return 1
+        amount = args.amount if args.action == "deposit" else -abs(args.amount)
+        betting.deposit(conn, amount, args.note or "")
+        say(f"bankroll now ${betting.balance(conn):,.2f}")
+    conn.close()
+    return 0
+
+
 # --------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(prog="gridiron", description=__doc__,
@@ -315,6 +400,42 @@ def main():
     p.add_argument("--push", action="store_true",
                    help="push after committing (implies --commit); publishes to the remote")
     p.set_defaults(fn=cmd_export)
+
+
+    p = sub.add_parser("scan", help="edge candidates against live Kalshi prices")
+    league_arg(p)
+    p.add_argument("--bankroll", type=float,
+                   help="price against this instead of the recorded bankroll")
+    p.set_defaults(fn=cmd_scan)
+
+    p = sub.add_parser("bet", help="place, grade and review bets")
+    bsub = p.add_subparsers(dest="betcmd", required=True)
+
+    b = bsub.add_parser("place", help="record a bet you placed in the app")
+    b.add_argument("game_id", type=int)
+    b.add_argument("team", help="team id, abbrev or full name")
+    b.add_argument("--contracts", type=int, required=True)
+    b.add_argument("--price", type=float, required=True)
+    b.add_argument("--ticker", required=True, help="Kalshi market ticker")
+    b.add_argument("--ack-news", required=True, dest="ack_news",
+                   help="news check at bet time; stored with the bet permanently")
+    b.add_argument("--provenance", choices=("sized", "manual"), default="sized",
+                   help="'manual' for a bet the sizer did not produce; it stays in "
+                        "the P&L but out of the edge evidence")
+    b.set_defaults(fn=cmd_bet_place)
+
+    bsub.add_parser("grade", help="settle finished games").set_defaults(fn=cmd_bet_grade)
+
+    b = bsub.add_parser("ledger", help="portfolio performance")
+    b.add_argument("--open", action="store_true", help="only unsettled bets")
+    b.set_defaults(fn=cmd_bet_ledger)
+
+    p = sub.add_parser("bankroll", help="cash in, cash out, and the curve")
+    p.add_argument("action", choices=("show", "deposit", "withdraw", "history"),
+                   nargs="?", default="show")
+    p.add_argument("amount", type=float, nargs="?")
+    p.add_argument("--note")
+    p.set_defaults(fn=cmd_bankroll)
 
     sub.add_parser("status", help="what the database holds").set_defaults(fn=cmd_status)
 

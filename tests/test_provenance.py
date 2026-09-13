@@ -28,11 +28,16 @@ class ProvenanceTestCase(unittest.TestCase):
 
     def setUp(self):
         self.conn = db.connect()
+        # Registered first so a failure here cannot leak the connection and lock
+        # the database for every test after it.
+        self.addCleanup(self.conn.close)
+        # Children before parents: bankroll_event.bet_id references bet(id), and
+        # record_bet writes one of each.
+        self.conn.execute("DELETE FROM bankroll_event")
         self.conn.execute("DELETE FROM bet")
+        self.conn.commit()
         self.team, self.game = self._game()
-
-    def tearDown(self):
-        self.conn.close()
+        self.conn.commit()
 
     def _game(self):
         t = self.conn.execute(
