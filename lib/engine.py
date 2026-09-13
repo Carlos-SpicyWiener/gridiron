@@ -197,3 +197,64 @@ def _market_for_team(markets, resolution, team_id):
         if ticker.rsplit("-", 1)[-1].upper() == wanted[0].upper():
             return market
     return None
+
+
+def _remember_aliases(conn, league, aliases):
+    """Record Kalshi's spelling. Theirs is not ours -- their WAS is our WSH."""
+    for abbrev, team_id in aliases.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO kalshi_alias (league, kalshi_abbrev, team_id, "
+            "first_seen) VALUES (?, ?, ?, ?)", (league, abbrev, team_id, db.now()))
+
+
+def ingest_snapshots(conn, league, markets=None, stamp=None):
+    """Persist one quote per side per poll.
+
+    This is what makes closing-line value knowable. The close cannot be fetched
+    at grade time -- a settled market quotes 0.99/0.01 over a 0.00/1.00 book, so
+    asking then would turn CLV into a restatement of the win/loss record. It has
+    to have been written down before kickoff, which means this has to be running
+    on a timer whether or not anyone is looking.
+
+    Append-only, like odds_snapshot: the movement between open and kickoff is
+    itself the signal, so nothing here overwrites.
+    """
+    if markets is None:
+        markets = kalshi.open_markets(league)
+    stamp = stamp or db.now()
+    resolved = 0
+    before = conn.total_changes
+    for event_ticker, pair in kalshi.by_event(markets).items():
+        if len(pair) != 2:
+            continue
+        try:
+            parsed = kalshi.parse_event_ticker(event_ticker)
+        except ValueError:
+            continue
+        res = kalshi.resolve(parsed.suffix,
+                             [m.get("no_sub_title") for m in pair],
+                             candidate_games(conn, league, parsed.date))
+        if not res:
+            continue
+        resolved += 1
+        _remember_aliases(conn, league, res.aliases)
+        for m in pair:
+            q = kalshi.quote(m)
+            if q is None:
+                continue
+            abbrev = (m.get("ticker") or "").rsplit("-", 1)[-1].upper()
+            team_id = res.aliases.get(abbrev)
+            if team_id is None:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO kalshi_snapshot (game_id, team_id, market_ticker, "
+                "fetched_at, yes_bid, yes_ask, mid, open_interest, volume) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (res.game_id, team_id, m.get("ticker"), stamp, q.bid, q.ask, q.mid,
+                 float(m.get("open_interest_fp") or 0.0),
+                 float(m.get("volume") or 0.0)))
+    conn.commit()
+    # Count rows THIS call inserted. Counting by timestamp instead would double
+    # count whenever two leagues are polled within the same second.
+    return {"events_resolved": resolved,
+            "snapshots": conn.total_changes - before}

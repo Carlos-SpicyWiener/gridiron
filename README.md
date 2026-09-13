@@ -48,7 +48,7 @@ Install the timer to run it for you:
 mkdir -p ~/.config/systemd/user
 cp systemd/gridiron-*.service systemd/gridiron-*.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now gridiron-sync.timer gridiron-mcp
+systemctl --user enable --now gridiron-sync.timer gridiron-poll.timer gridiron-mcp
 loginctl enable-linger "$USER"
 ```
 

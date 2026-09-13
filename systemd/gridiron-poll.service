@@ -1,0 +1,11 @@
+[Unit]
+Description=Capture Kalshi quotes for gridiron
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/gridiron/env
+ExecStart=%h/gridiron/bin/gridiron poll
+NoNewPrivileges=yes
+PrivateTmp=yes

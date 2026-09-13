@@ -248,6 +248,28 @@ def cmd_status(args):
 
 
 
+
+def cmd_poll(args):
+    """Capture Kalshi quotes so a closing price exists when the bet is graded.
+
+    Must run on a timer. The close cannot be recovered afterwards: a settled
+    market quotes 0.99/0.01 over a 0.00/1.00 book, so a price not written down
+    before kickoff is gone.
+    """
+    conn = db.connect()
+    total = 0
+    for league in leagues_from(args.league):
+        try:
+            got = engine.ingest_snapshots(conn, league)
+        except Exception as exc:                      # noqa: BLE001 - a timer job
+            say(f"{league}: poll failed ({exc.__class__.__name__}: {exc})")
+            continue
+        total += got["snapshots"]
+        say(f"{league}: {got['snapshots']} quote(s) from {got['events_resolved']} event(s)")
+    conn.close()
+    return 0 if total else 1
+
+
 # ------------------------------------------------------------------ betting --
 def cmd_scan(args):
     """What to bet, how much, and why everything else was skipped."""
@@ -401,6 +423,10 @@ def main():
                    help="push after committing (implies --commit); publishes to the remote")
     p.set_defaults(fn=cmd_export)
 
+
+    p = sub.add_parser("poll", help="capture Kalshi quotes (run me on a timer)")
+    league_arg(p)
+    p.set_defaults(fn=cmd_poll)
 
     p = sub.add_parser("scan", help="edge candidates against live Kalshi prices")
     league_arg(p)

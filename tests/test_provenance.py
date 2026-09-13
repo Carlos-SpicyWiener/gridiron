@@ -7,14 +7,13 @@ provenance is recorded when the bet is placed and never revised.
 import os
 import sqlite3
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-_TMP = tempfile.mkdtemp(prefix="gridiron-prov-")
-os.environ["GRIDIRON_DB"] = os.path.join(_TMP, "test.db")
+
+from tests import support  # noqa: E402
 
 from lib import db  # noqa: E402
 from lib import betting  # noqa: E402
@@ -31,11 +30,7 @@ class ProvenanceTestCase(unittest.TestCase):
         # Registered first so a failure here cannot leak the connection and lock
         # the database for every test after it.
         self.addCleanup(self.conn.close)
-        # Children before parents: bankroll_event.bet_id references bet(id), and
-        # record_bet writes one of each.
-        self.conn.execute("DELETE FROM bankroll_event")
-        self.conn.execute("DELETE FROM bet")
-        self.conn.commit()
+        support.reset(self.conn)
         self.team, self.game = self._game()
         self.conn.commit()
 

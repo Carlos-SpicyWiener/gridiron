@@ -1,0 +1,16 @@
+[Unit]
+Description=Poll Kalshi every 15 minutes
+
+[Timer]
+# A closing price cannot be recovered after the fact. Once a market settles it
+# quotes 0.99/0.01 over a 0.00/1.00 book, so the last price before kickoff has
+# to have been written down while the market was still open -- which means this
+# runs on a schedule whether or not anyone is watching. Every 15 minutes is
+# cheap (two unauthenticated GETs) and close enough to kickoff to be a fair
+# close for CLV.
+OnCalendar=*:0/15
+Persistent=false
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

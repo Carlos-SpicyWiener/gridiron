@@ -6,14 +6,13 @@ imported, so this can never touch data/gridiron.db.
 import os
 import sqlite3
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-_TMP = tempfile.mkdtemp(prefix="gridiron-test-")
-os.environ["GRIDIRON_DB"] = os.path.join(_TMP, "test.db")
+
+from tests import support  # noqa: E402
 
 from lib import db  # noqa: E402  (must follow the env redirect)
 
@@ -82,7 +81,7 @@ class BetColumns(SchemaTestCase):
 class Bankroll(SchemaTestCase):
 
     def test_balance_is_the_sum_of_events(self):
-        self.conn.execute("DELETE FROM bankroll_event")
+        support.reset(self.conn)
         for delta, reason in ((100.0, "deposit"), (25.5, "deposit"), (-30.25, "withdrawal")):
             self.conn.execute(
                 "INSERT INTO bankroll_event (ts, delta, reason) VALUES (?, ?, ?)",
@@ -92,7 +91,7 @@ class Bankroll(SchemaTestCase):
         self.assertAlmostEqual(balance, 95.25, places=6)
 
     def test_an_empty_ledger_is_zero_not_null(self):
-        self.conn.execute("DELETE FROM bankroll_event")
+        support.reset(self.conn)
         balance = self.conn.execute(
             "SELECT COALESCE(SUM(delta), 0.0) AS b FROM bankroll_event").fetchone()["b"]
         self.assertEqual(balance, 0.0)

@@ -1,14 +1,13 @@
 """Grading bets and reporting the portfolio. Spec §6."""
 import os
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-_TMP = tempfile.mkdtemp(prefix="gridiron-ledger-")
-os.environ["GRIDIRON_DB"] = os.path.join(_TMP, "test.db")
+
+from tests import support  # noqa: E402
 
 from lib import betting, db  # noqa: E402
 
@@ -26,10 +25,7 @@ class LedgerTestCase(unittest.TestCase):
         # Registered before anything can fail, so a bad setUp cannot leak the
         # connection and lock the database for every test after it.
         self.addCleanup(self.conn.close)
-        # Children before parents: bankroll_event.bet_id references bet(id).
-        for table in ("bankroll_event", "bet", "kalshi_snapshot", "game", "team"):
-            self.conn.execute(f"DELETE FROM {table}")
-        self.conn.commit()
+        support.reset(self.conn)
         self.home = self._team("Home Team", "HOM")
         self.away = self._team("Away Team", "AWY")
         self.conn.commit()
