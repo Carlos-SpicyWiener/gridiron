@@ -136,3 +136,71 @@ def ledger_report(conn, open_only=False):
         out.append(f"    note: {perf['settled'] - perf['sized_settled']} settled bet(s) are "
                    f"'manual' — in the P&L above, out of the edge evidence.")
     return "\n".join(out)
+
+
+def evidence_report(conn):
+    """Does the model anticipate the market, and by enough to pay for itself?"""
+    from . import calibration, evidence
+
+    obs = evidence.observations(conn, calibration.calibrate)
+    out = []
+    if len(obs) < evidence.MIN_SAMPLE:
+        out.append("  Not enough games with both an opening and a later line yet.")
+        return "\n".join(out)
+
+    out.append(f"  DOES THE LINE MOVE TOWARD THE MODEL?   n = {len(obs)} games")
+    out.append("  Measured on games with an opening line, a later line and a pick.")
+    out.append("  The model never reads the market, so this is not circular.")
+    out.append("")
+    out.append(f"    {'disagreement':>16}{'n':>6}{'line moved':>13}{'se':>9}"
+               f"{'t':>7}   verdict")
+    out.append("    " + "-" * 66)
+    for label, floor in (("any", 0.0), ("> 3 pts", 0.03),
+                         ("> 5 pts", 0.05), ("> 8 pts", 0.08)):
+        s = evidence.summarise(obs, floor)
+        out.append(f"    {label:>16}{s['n']:>6}{s['mean']:>+13.4f}{s['se']:>9.4f}"
+                   f"{s['t']:>+7.2f}   {s['verdict']}")
+
+    for league in ("nfl", "cfb"):
+        sub = [o for o in obs if o.league == league]
+        if len(sub) < evidence.MIN_SAMPLE:
+            continue
+        s = evidence.summarise(sub)
+        out.append(f"    {league.upper():>16}{s['n']:>6}{s['mean']:>+13.4f}"
+                   f"{s['se']:>9.4f}{s['t']:>+7.2f}   {s['verdict']}")
+
+    out.append("")
+    out.append("  READING IT")
+    overall = evidence.summarise(obs)
+    tail = evidence.summarise(obs, 0.08)
+    if overall["verdict"] == "real":
+        out.append(f"    The effect is real: the line moves {overall['mean'] * 100:.1f} "
+                   f"points toward the model,")
+        out.append(f"    at {overall['t']:.1f} sigma. The model is picking up something the "
+                   f"market later agrees with.")
+    else:
+        out.append("    No significant anticipation of the market yet.")
+
+    out.append("")
+    if evidence.decays_with_conviction(obs):
+        out.append("    BUT IT DECAYS WITH CONVICTION. The effect is weaker on the games "
+                   "the model")
+        out.append("    feels strongest about — and those are the only games this tool "
+                   "bets. A signal")
+        out.append("    that lives in the small disagreements is a broad nudge, not "
+                   "insight, and it")
+        out.append("    is not one the gates can harvest.")
+    else:
+        out.append("    It holds up on the model's strong opinions, which are the ones "
+                   "that get bet.")
+
+    out.append("")
+    out.append(f"    Magnitude check: {overall['mean'] * 100:.1f} points of line movement "
+               f"against a")
+    out.append("    2-3c fee and a 5c edge gate. More data sharpens this estimate; it "
+               "does not")
+    out.append("    enlarge it. Precision and profitability are different axes.")
+    if tail["n"] >= evidence.MIN_SAMPLE:
+        out.append(f"    On the games actually bet (>8 pts): {tail['mean'] * 100:+.1f} "
+                   f"points, {tail['verdict']}.")
+    return "\n".join(out)

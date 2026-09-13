@@ -334,6 +334,17 @@ def cmd_bet_ledger(args):
     return 0
 
 
+
+def cmd_report(args):
+    conn = db.connect(readonly=True)
+    if args.what == "movement":
+        say(report.evidence_report(conn))
+    else:
+        say(report.ledger_report(conn))
+    conn.close()
+    return 0
+
+
 def cmd_bankroll(args):
     conn = db.connect()
     if args.action == "show":
@@ -455,6 +466,10 @@ def main():
     b = bsub.add_parser("ledger", help="portfolio performance")
     b.add_argument("--open", action="store_true", help="only unsettled bets")
     b.set_defaults(fn=cmd_bet_ledger)
+
+    p = sub.add_parser("report", help="evidence: is the model actually finding edge?")
+    p.add_argument("what", choices=("movement", "clv"), nargs="?", default="movement")
+    p.set_defaults(fn=cmd_report)
 
     p = sub.add_parser("bankroll", help="cash in, cash out, and the curve")
     p.add_argument("action", choices=("show", "deposit", "withdraw", "history"),
