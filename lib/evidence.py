@@ -114,7 +114,13 @@ def observations(conn, calibrate):
         latest = prob_for(is_home, r["c_home"], r["c_away"])
         if opening is None or latest is None:
             continue
+        # No Platt fit => no calibrated disagreement. Fail closed rather than
+        # borrowing NFL's coefficients for a sport that has not been measured.
+        try:
+            p_cal = calibrate(r["win_prob"], r["league"])
+        except KeyError:
+            continue
         out.append(Observation(r["league"],
-                               calibrate(r["win_prob"], r["league"]) - opening,
+                               p_cal - opening,
                                latest - opening))
     return out

@@ -18,17 +18,22 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lib import (backtest, betting, db, elo, engine, espn, exporter,  # noqa: E402
-                 odds, picks, report)
+                 leagues, odds, picks, report)
 
-LEAGUES = ("nfl", "cfb")
+LEAGUES = leagues.KNOWN
 
 
 def say(msg):
     print(msg, flush=True)
 
 
-def leagues_from(arg):
-    return LEAGUES if arg in (None, "all") else (arg,)
+def leagues_from(arg, *, betting=False):
+    """`all` follows GRIDIRON_LEAGUES for ingest, BETTING for scan/poll."""
+    if arg not in (None, "all"):
+        return (arg,)
+    if betting:
+        return leagues.BETTING
+    return leagues.enabled()
 
 
 def parse_seasons(spec):
@@ -67,7 +72,8 @@ def cmd_sync(args):
     conn = db.connect()
     for league in leagues_from(args.league):
         season, week, seen, new, odds_rows = espn.ingest_current(conn, league, progress=say)
-        say(f"{league.upper()}: {season} week {week} — {seen} games ({new} new), "
+        when = f"{season} week {week}" if week is not None else str(season)
+        say(f"{league.upper()}: {when} — {seen} games ({new} new), "
             f"{odds_rows} odds snapshots")
     conn.close()
 
@@ -258,7 +264,10 @@ def cmd_poll(args):
     """
     conn = db.connect()
     total = 0
-    for league in leagues_from(args.league):
+    for league in leagues_from(args.league, betting=True):
+        if not leagues.betting_allowed(league):
+            say(f"{league}: poll skipped — Kalshi series not wired (betting locked)")
+            continue
         try:
             got = engine.ingest_snapshots(conn, league)
         except Exception as exc:                      # noqa: BLE001 - a timer job
@@ -279,7 +288,19 @@ def cmd_scan(args):
         say("bankroll is zero — set one with `gridiron bankroll deposit <amount>`, "
             "or pass --bankroll to price a hypothetical")
         return 1
-    say(report.scan_report(conn, bankroll, leagues_from(args.league)))
+    if args.league in (None, "all"):
+        scanable, blocked = list(leagues.BETTING), []
+    else:
+        wanted = (args.league,)
+        blocked = [lg for lg in wanted if not leagues.betting_allowed(lg)]
+        scanable = [lg for lg in wanted if leagues.betting_allowed(lg)]
+    if blocked:
+        say("sized betting locked for %s — ingest/rate/slate only; "
+            "§7 unlock is per-league (docs/phase2-spec.md)" % ", ".join(blocked))
+        if not scanable:
+            conn.close()
+            return 0
+    say(report.scan_report(conn, bankroll, scanable))
     conn.close()
     return 0
 
@@ -302,11 +323,17 @@ def cmd_bet_place(args):
     market_prob = pred["market_prob"]
     if market_prob is not None and pred["market_pick_team_id"] not in (None, team["id"]):
         market_prob = 1.0 - market_prob
+    try:
+        model_prob = _calibrated_or_refuse(pred["win_prob"], pred["league"])
+    except RuntimeError as e:
+        say(str(e))
+        conn.close()
+        return 1
     bet_id = betting.record_bet(
         conn, league=pred["league"], game_id=args.game_id, side_team_id=team["id"],
         market_ticker=args.ticker, contracts=args.contracts, price=args.price,
         model_prob_raw=pred["win_prob"],
-        model_prob=calibrated(pred["win_prob"], pred["league"]),
+        model_prob=model_prob,
         market_prob=market_prob, notes=args.ack_news, provenance=args.provenance)
     say(f"bet {bet_id}: {args.contracts} x {team['name']} @ {args.price:.2f} "
         f"({args.provenance}); bankroll now ${betting.balance(conn):,.2f}")
@@ -317,6 +344,16 @@ def cmd_bet_place(args):
 def calibrated(p, league):
     from lib import calibration
     return calibration.calibrate(p, league)
+
+
+def _calibrated_or_refuse(p, league):
+    """Fail closed: no Platt fit means no sized bet, not NFL's coefficients."""
+    try:
+        return calibrated(p, league)
+    except KeyError:
+        raise RuntimeError(
+            f"no calibration for {league} — betting stays locked until a "
+            f"per-league fit exists (docs/phase2-spec.md §5)") from None
 
 
 def cmd_bet_grade(args):
@@ -371,7 +408,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def league_arg(p, default="all"):
-        p.add_argument("--league", choices=("nfl", "cfb", "all"), default=default)
+        p.add_argument("--league", choices=tuple(leagues.KNOWN) + ("all",), default=default)
 
     sub.add_parser("init", help="create the database").set_defaults(fn=cmd_init)
 
@@ -408,7 +445,7 @@ def main():
     p.set_defaults(fn=cmd_record)
 
     p = sub.add_parser("ratings", help="power ratings")
-    p.add_argument("--league", choices=("nfl", "cfb"), default="nfl")
+    p.add_argument("--league", choices=leagues.KNOWN, default="nfl")
     p.add_argument("--limit", type=int, default=25)
     p.set_defaults(fn=cmd_ratings)
 

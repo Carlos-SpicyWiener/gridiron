@@ -13,7 +13,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS team (
   id            INTEGER PRIMARY KEY,
-  league        TEXT    NOT NULL,              -- 'nfl' | 'cfb'
+  league        TEXT    NOT NULL,              -- nfl | cfb | nba | mlb | cbb
   espn_id       TEXT    NOT NULL,
   name          TEXT    NOT NULL,
   abbrev        TEXT,

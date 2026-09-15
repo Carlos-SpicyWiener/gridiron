@@ -3,9 +3,9 @@ import os
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import db, elo, odds
+from . import db, elo, leagues, odds
 
-LEAGUE_LABEL = {"nfl": "NFL", "cfb": "CFB"}
+LEAGUE_LABEL = leagues.LABEL
 
 # This box runs on UTC, so .astimezone() would render a Sunday 12:00 kickoff as
 # Monday. Kickoff times are the whole point of a slate, so the display zone is
@@ -70,6 +70,10 @@ def predict(conn, league=None, days=10, model=elo.MODEL_VERSION):
     if league:
         sql += " AND g.league = ?"
         params.append(league)
+    else:
+        enabled = leagues.enabled()
+        sql += " AND g.league IN (%s)" % ",".join("?" * len(enabled))
+        params.extend(enabled)
     sql += " ORDER BY g.kickoff_utc"
 
     written = skipped = locked = unchanged = 0
@@ -176,6 +180,10 @@ def render_slate(conn, league=None, days=10, model=elo.MODEL_VERSION):
     if league:
         sql += " AND g.league = ?"
         params.append(league)
+    else:
+        enabled = leagues.enabled()
+        sql += " AND g.league IN (%s)" % ",".join("?" * len(enabled))
+        params.extend(enabled)
     sql += " ORDER BY g.league, g.kickoff_utc"
 
     rows = conn.execute(sql, params).fetchall()

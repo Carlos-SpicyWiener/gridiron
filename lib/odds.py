@@ -22,11 +22,11 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-from . import db
+from . import db, leagues
 
 API = "https://api.the-odds-api.com/v4"
 KEY = os.environ.get("GRIDIRON_ODDS_KEY")
-SPORT_KEY = {"nfl": "americanfootball_nfl", "cfb": "americanfootball_ncaaf"}
+SPORT_KEY = leagues.ODDS_SPORT_KEY
 
 # A line and an ESPN game must start within this window to be the same game.
 MATCH_WINDOW = timedelta(hours=30)

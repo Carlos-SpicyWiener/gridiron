@@ -17,6 +17,7 @@ SKIP_REASON = {
     "exposure_capped": "would breach the 20% open-exposure cap",
     "already_held": "you already hold this position",
     "price_disagrees_with_book": "Kalshi price is >15pts off the book - stale or mismapped",
+    "league_disabled": "sized betting locked for this league (Phase 2 ingest only)",
 }
 
 
@@ -27,7 +28,7 @@ def _kick(iso):
         return "?"
 
 
-def scan_report(conn, bankroll, leagues=("nfl", "cfb")):
+def scan_report(conn, bankroll, leagues=("nfl", "cfb")):  # noqa: A002 — arg name is the CLI's
     candidates, skipped, unresolved = [], [], []
     for league in leagues:
         rows, un = engine.scan(conn, league, bankroll)

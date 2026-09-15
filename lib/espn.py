@@ -3,26 +3,27 @@
 ESPN's public JSON endpoints are undocumented and can change without notice, so
 every field access here goes through _get() with a default. The rule is that a
 shape change should cost us a field, never a crash mid-backfill.
+
+League-specific behaviour lives in lib/leagues.py (paths, calendar shape, which
+teams count as 'major'). ingest_events is shared: a scoreboard payload becomes
+team/game rows the Elo engine already knows how to replay. Adding a sport is a
+config block plus whatever calendar the scoreboard uses — not a new engine.
 """
+import datetime as dt
 import json
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import db
+from . import db, leagues
 
-SITE = "https://site.api.espn.com/apis/site/v2/sports/football"
-CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues"
+SITE = "https://site.api.espn.com/apis/site/v2/sports"
+CORE = "https://sports.core.api.espn.com/v2/sports"
 UA = "gridiron/1.0 (personal football model; contact via local host)"
 
-LEAGUES = {
-    "nfl": {"path": "nfl", "core": "nfl", "reg_weeks": 18, "post_weeks": 5, "params": {}},
-    # groups=80 restricts the scoreboard to FBS games. FCS opponents still show
-    # up inside those games, which is what we want: a buy game is real evidence.
-    "cfb": {"path": "college-football", "core": "college-football", "reg_weeks": 15,
-            "post_weeks": 1, "params": {"groups": "80", "limit": "400"}},
-}
+# Back-compat alias: football callers and tests can still say espn.LEAGUES.
+LEAGUES = leagues.INGEST
 
 # ESPN sometimes rate-limits a fast backfill. One polite pause between calls.
 THROTTLE_S = 0.6
@@ -56,25 +57,54 @@ def _get(obj, *path, default=None):
     return cur if cur is not None else default
 
 
-# --------------------------------------------------------------------------
-# FBS membership — decides a college team's starting rating
-# --------------------------------------------------------------------------
-def fbs_team_ids(season):
-    """Authoritative FBS roster for a season, via the core API group tree.
+def scoreboard_url(league, season=None, season_type=None, week=None, dates=None):
+    """Build the scoreboard URL. Football keys on week; NBA/MLB/CBB on dates."""
+    cfg = LEAGUES[league]
+    params = dict(cfg.get("params") or {})
+    if dates:
+        params["dates"] = dates
+    else:
+        if season is not None:
+            params["dates"] = str(season)
+        if season_type is not None:
+            params["seasontype"] = str(season_type)
+        if week is not None:
+            params["week"] = str(week)
+    return f"{SITE}/{cfg['sport']}/{cfg['path']}/scoreboard?" + urllib.parse.urlencode(params)
 
-    group 80 is FBS; its children are the conferences; each conference lists its
-    teams. Anything not in this set is treated as non-FBS and starts lower.
+
+def scoreboard(league, season=None, season_type=None, week=None, dates=None):
+    return _fetch(scoreboard_url(league, season=season, season_type=season_type,
+                                 week=week, dates=dates))
+
+
+# --------------------------------------------------------------------------
+# major-sport membership — decides a college team's starting rating
+# --------------------------------------------------------------------------
+def major_team_ids(league, season):
+    """Authoritative 'major' roster for a season, via the core API group tree.
+
+    CFB group 80 is FBS; CBB group 50 is Division I. Children are conferences;
+    each conference lists its teams. Anything not in the set starts at other_base.
+    NBA/MLB return None — every team is major.
     """
+    cfg = LEAGUES[league]
+    group = cfg.get("major_group")
+    if group is None:
+        return None
     import re
     out = set()
-    kids = _fetch(f"{CORE}/college-football/seasons/{season}/types/2/groups/80/children?limit=50")
+    kids = _fetch(
+        f"{CORE}/{cfg['sport']}/leagues/{cfg['core']}/seasons/{season}/types/2/"
+        f"groups/{group}/children?limit=50")
     for item in kids.get("items", []):
         m = re.search(r"/groups/(\d+)", item.get("$ref", ""))
         if not m:
             continue
         time.sleep(THROTTLE_S)
-        teams = _fetch(f"{CORE}/college-football/seasons/{season}/types/2/"
-                       f"groups/{m.group(1)}/teams?limit=50")
+        teams = _fetch(
+            f"{CORE}/{cfg['sport']}/leagues/{cfg['core']}/seasons/{season}/types/2/"
+            f"groups/{m.group(1)}/teams?limit=50")
         for t in teams.get("items", []):
             tm = re.search(r"/teams/(\d+)", t.get("$ref", ""))
             if tm:
@@ -82,17 +112,14 @@ def fbs_team_ids(season):
     return out
 
 
+def fbs_team_ids(season):
+    """Back-compat wrapper. CFB FBS membership is group 80."""
+    return major_team_ids("cfb", season)
+
+
 # --------------------------------------------------------------------------
 # scoreboard -> rows
 # --------------------------------------------------------------------------
-def scoreboard(league, season, season_type, week):
-    cfg = LEAGUES[league]
-    params = dict(cfg["params"])
-    params.update({"dates": str(season), "seasontype": str(season_type), "week": str(week)})
-    url = f"{SITE}/{cfg['path']}/scoreboard?" + urllib.parse.urlencode(params)
-    return _fetch(url)
-
-
 def _status(event):
     """Map ESPN's status vocabulary onto ours, keeping abandoned games out."""
     state = _get(event, "status", "type", "state", default="pre")
@@ -103,6 +130,14 @@ def _status(event):
     if completed:
         return "final"
     return {"pre": "scheduled", "in": "in", "post": "final"}.get(state, "scheduled")
+
+
+def _event_season(event, payload):
+    year = _get(event, "season", "year") or _get(payload, "season", "year")
+    stype = _get(event, "season", "type")
+    if stype is None:
+        stype = _get(payload, "season", "type", default=2)
+    return year, stype
 
 
 # --------------------------------------------------------------------------
@@ -117,6 +152,8 @@ def _status(event):
 # Both the opening and closing price are published, so line movement is stored
 # too — as a separate pseudo-book, because an opening price is not a competing
 # quote and must never be averaged with the close.
+#
+# Basketball and baseball payloads often omit this block. NULL stays honest.
 
 def _american(value):
     """ESPN gives prices as strings like '-170' or 'EVEN'."""
@@ -170,13 +207,21 @@ def ingest_odds(conn, game_id, comp, stamp):
     return written
 
 
-def ingest_events(conn, league, payload, fbs_ids=None):
-    """Write every event in a scoreboard payload. Returns (seen, new)."""
-    season = _get(payload, "season", "year")
-    season_type = _get(payload, "season", "type", default=2)
+def ingest_events(conn, league, payload, major_ids=None):
+    """Write every event in a scoreboard payload. Returns (seen, new, odds_rows)."""
+    cfg = LEAGUES[league]
+    allowed_types = set(cfg.get("season_types") or (2, 3))
     seen = new = odds_rows = 0
     stamp = db.now()
     for event in payload.get("events", []):
+        season, season_type = _event_season(event, payload)
+        try:
+            season_type = int(season_type)
+        except (TypeError, ValueError):
+            season_type = 2
+        if season_type not in allowed_types:
+            continue
+
         comp = _get(event, "competitions", 0)
         if not comp:
             continue
@@ -184,9 +229,9 @@ def ingest_events(conn, league, payload, fbs_ids=None):
         if len(competitors) != 2:
             continue  # nothing to model without exactly two sides
 
-        # Exhibitions are not evidence. The Pro Bowl arrives in the same
-        # seasontype=3 feed as the playoffs and would otherwise create two
-        # phantom "teams" (AFC, NFC) that rate and rank alongside real ones.
+        # Exhibitions are not evidence. The Pro Bowl / All-Star Game arrives in
+        # the same feed as real games and would otherwise create phantom teams
+        # (AFC, NFC, AL, NL) that rate alongside real ones.
         if _get(comp, "type", "abbreviation", default="") == "ALLSTAR":
             continue
 
@@ -196,10 +241,10 @@ def ingest_events(conn, league, payload, fbs_ids=None):
             espn_id = str(tm.get("id", ""))
             if not espn_id:
                 break
-            if league == "nfl":
-                tier = "major"
+            if cfg.get("major_group") is not None:
+                tier = "major" if (major_ids and espn_id in major_ids) else "other"
             else:
-                tier = "major" if (fbs_ids and espn_id in fbs_ids) else "other"
+                tier = "major"
             team_id = db.upsert_team(
                 conn, league, espn_id,
                 tm.get("displayName") or tm.get("name") or f"team {espn_id}",
@@ -243,12 +288,77 @@ def ingest_events(conn, league, payload, fbs_ids=None):
     return seen, new, odds_rows
 
 
-def ingest_season(conn, league, season, progress=None):
-    """Pull a whole season, regular then postseason. Returns (seen, new)."""
+def _calendar_days(payload):
+    """YYYYMMDD strings from an ESPN scoreboard calendar, if it has one."""
+    leagues_block = payload.get("leagues") or []
+    cal = (leagues_block[0] or {}).get("calendar") if leagues_block else None
+    if not isinstance(cal, list):
+        return []
+    out = []
+    for item in cal:
+        text = str(item)
+        if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+            ymd = text[:10].replace("-", "")
+            if ymd.isdigit() and ymd not in out:
+                out.append(ymd)
+    return out
+
+
+def _ymd_range(year, start_md, end_md):
+    start = dt.date(year, start_md[0], start_md[1])
+    end = dt.date(year, end_md[0], end_md[1])
+    out = []
+    cur = start
+    while cur <= end:
+        out.append(cur.strftime("%Y%m%d"))
+        cur += dt.timedelta(days=1)
+    return out
+
+
+def season_dates(league, season):
+    """Days to fetch for a date-based backfill. No network for fill-window leagues."""
     cfg = LEAGUES[league]
-    fbs = fbs_team_ids(season) if league == "cfb" else None
-    if progress and league == "cfb":
-        progress(f"    FBS roster for {season}: {len(fbs or [])} teams")
+    fill = cfg.get("fill_season_md")
+    if fill:
+        return _ymd_range(season, fill[0], fill[1])
+    payload = scoreboard(league, dates=str(season))
+    days = _calendar_days(payload)
+    if days:
+        return days
+    # Fail closed on an empty calendar rather than walking 365 empty days.
+    raise RuntimeError(f"no ESPN calendar for {league} {season}")
+
+
+def _chunks(items, n):
+    n = max(int(n or 1), 1)
+    for i in range(0, len(items), n):
+        yield items[i:i + n]
+
+
+def _dates_param(days):
+    if not days:
+        return None
+    if len(days) == 1:
+        return days[0]
+    return f"{days[0]}-{days[-1]}"
+
+
+def ingest_season(conn, league, season, progress=None):
+    """Pull a whole season. Returns (seen, new)."""
+    cfg = LEAGUES[league]
+    majors = major_team_ids(league, season) if cfg.get("major_group") else None
+    if progress and majors is not None:
+        label = "FBS" if league == "cfb" else "D1"
+        progress(f"    {label} roster for {season}: {len(majors)} teams")
+
+    if cfg.get("calendar") == "week":
+        return _ingest_season_weeks(conn, league, season, majors, progress)
+    return _ingest_season_days(conn, league, season, majors, progress)
+
+
+def _ingest_season_weeks(conn, league, season, majors, progress):
+    """Football: regular then postseason, one week at a time."""
+    cfg = LEAGUES[league]
     total_seen = total_new = 0
     for season_type, weeks in ((2, cfg["reg_weeks"]), (3, cfg["post_weeks"])):
         for week in range(1, weeks + 1):
@@ -258,7 +368,7 @@ def ingest_season(conn, league, season, progress=None):
                 if progress:
                     progress(f"    skip {season} t{season_type} w{week}: {e}")
                 continue
-            seen, new, _ = ingest_events(conn, league, payload, fbs)
+            seen, new, _ = ingest_events(conn, league, payload, majors)
             total_seen += seen
             total_new += new
             if progress and seen:
@@ -269,22 +379,51 @@ def ingest_season(conn, league, season, progress=None):
     return total_seen, total_new
 
 
-def ingest_current(conn, league, progress=None):
-    """Refresh the current week, the one before, and the one after.
+def _ingest_season_days(conn, league, season, majors, progress):
+    """NBA/MLB/CBB: walk the season's dates, chunked to stay under ESPN's cap."""
+    cfg = LEAGUES[league]
+    days = season_dates(league, season)
+    total_seen = total_new = 0
+    for chunk in _chunks(days, cfg.get("chunk_days", 1)):
+        try:
+            payload = scoreboard(league, dates=_dates_param(chunk))
+        except RuntimeError as e:
+            if progress:
+                progress(f"    skip {league} {chunk[0]}: {e}")
+            continue
+        seen, new, _ = ingest_events(conn, league, payload, majors)
+        total_seen += seen
+        total_new += new
+        if progress and seen:
+            label = chunk[0] if len(chunk) == 1 else f"{chunk[0]}-{chunk[-1]}"
+            progress(f"    {season} {label}: {seen:>3} games ({new} new)")
+        conn.commit()
+        time.sleep(THROTTLE_S)
+    return total_seen, total_new
 
-    Before: results for games that finished since the last sync.
-    Current: live scores and any schedule change.
-    After: next week's fixtures, so the board can look further ahead than the
-    end of this week. Without it a mid-week slate is empty of everything except
-    games already under way.
+
+def ingest_current(conn, league, progress=None):
+    """Refresh recently finished games and the upcoming board.
+
+    Football: previous / current / next week, same as Phase 1.
+    Day-based sports: yesterday through +horizon_days, so `slate` has something
+    to show on a sport that plays every night.
     """
     cfg = LEAGUES[league]
-    params = dict(cfg["params"])
-    payload = _fetch(f"{SITE}/{cfg['path']}/scoreboard?" + urllib.parse.urlencode(params))
+    if cfg.get("calendar") == "week":
+        return _ingest_current_weeks(conn, league, progress)
+    return _ingest_current_days(conn, league, progress)
+
+
+def _ingest_current_weeks(conn, league, progress):
+    cfg = LEAGUES[league]
+    params = dict(cfg.get("params") or {})
+    payload = _fetch(f"{SITE}/{cfg['sport']}/{cfg['path']}/scoreboard?"
+                     + urllib.parse.urlencode(params))
     season = _get(payload, "season", "year")
     season_type = _get(payload, "season", "type", default=2)
     week = _get(payload, "week", "number", default=1)
-    fbs = fbs_team_ids(season) if league == "cfb" else None
+    majors = major_team_ids(league, season) if cfg.get("major_group") else None
 
     total_seen = total_new = total_odds = 0
     for wk in (week - 1, week, week + 1):
@@ -296,7 +435,7 @@ def ingest_current(conn, league, progress=None):
             if progress:
                 progress(f"    skip week {wk}: {e}")
             continue
-        seen, new, odds_rows = ingest_events(conn, league, pl, fbs)
+        seen, new, odds_rows = ingest_events(conn, league, pl, majors)
         total_seen += seen
         total_new += new
         total_odds += odds_rows
@@ -306,3 +445,47 @@ def ingest_current(conn, league, progress=None):
         conn.commit()
         time.sleep(THROTTLE_S)
     return season, week, total_seen, total_new, total_odds
+
+
+def _ingest_current_days(conn, league, progress):
+    cfg = LEAGUES[league]
+    today = dt.datetime.now(dt.timezone.utc).date()
+    horizon = int(cfg.get("horizon_days") or 7)
+    days = [(today + dt.timedelta(days=i)).strftime("%Y%m%d")
+            for i in range(-1, horizon + 1)]
+
+    # Membership is keyed on ESPN's season year (NBA 2024-25 is year 2025).
+    # Probe today so we don't walk the conference tree for the wrong year.
+    try:
+        probe = scoreboard(league, dates=today.strftime("%Y%m%d"))
+    except RuntimeError:
+        probe = {}
+    season = _get(probe, "season", "year")
+    if season is None:
+        for event in probe.get("events") or []:
+            season = _get(event, "season", "year")
+            if season:
+                break
+    if season is None:
+        season = today.year
+
+    majors = major_team_ids(league, season) if cfg.get("major_group") else None
+    total_seen = total_new = total_odds = 0
+    for chunk in _chunks(days, cfg.get("chunk_days", 1)):
+        try:
+            pl = scoreboard(league, dates=_dates_param(chunk))
+        except RuntimeError as e:
+            if progress:
+                progress(f"    skip {league} {chunk[0]}: {e}")
+            continue
+        seen, new, odds_rows = ingest_events(conn, league, pl, majors)
+        total_seen += seen
+        total_new += new
+        total_odds += odds_rows
+        if progress and seen:
+            label = chunk[0] if len(chunk) == 1 else f"{chunk[0]}-{chunk[-1]}"
+            progress(f"    {league.upper()} {label}: {seen} games ({new} new"
+                     + (f", {odds_rows} odds moves" if odds_rows else "") + ")")
+        conn.commit()
+        time.sleep(THROTTLE_S)
+    return season, None, total_seen, total_new, total_odds
