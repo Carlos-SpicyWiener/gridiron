@@ -17,15 +17,13 @@ Three departures from textbook Elo, all standard for football:
 """
 import math
 
-from . import db
+from . import db, leagues
 
 MODEL_VERSION = "elo-1.0"
 
-PARAMS = {
-    #      k     hfa   revert  base   other_base
-    "nfl": {"k": 20.0, "hfa": 48.0, "revert": 0.25, "base": 1500.0, "other_base": 1500.0},
-    "cfb": {"k": 38.0, "hfa": 65.0, "revert": 0.35, "base": 1500.0, "other_base": 1200.0},
-}
+# Config block lives in lib/leagues.py. The replay loop below is unchanged —
+# a new sport is PARAMS plus ingest, not a second rating function.
+PARAMS = leagues.PARAMS
 
 # Where a win probability stops being interesting. Tuned to plain English, not
 # to the model: a "lock" should be a game you'd be surprised to lose.

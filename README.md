@@ -1,8 +1,10 @@
 # gridiron
 
-Tracks NFL and college football, rates every team from results, and makes
-straight-up picks on upcoming matchups — then grades itself against what
-actually happened and against the betting market.
+Tracks NFL and college football (and, when enabled, NBA, MLB, and men's
+college basketball), rates every team from results, and makes straight-up
+picks on upcoming matchups — then grades itself against what actually
+happened and against the betting market. Football is the primary loop;
+other leagues are ingest adapters, not a second engine. See **Phase 2**.
 
 Stdlib Python 3 and SQLite. No pip install, no virtualenv, no external
 dependencies — it runs anywhere with Python 3.9+ and nothing else.
@@ -12,7 +14,8 @@ gridiron/
   bin/gridiron            CLI (all commands)
   bin/gridiron_cycle.sh   one weekly cycle, in the correct order
   lib/db.py               connections, upserts, timestamps
-  lib/espn.py             ESPN ingestion (schedules, results, FBS membership)
+  lib/espn.py             ESPN ingestion (schedules, results, FBS/D1 membership)
+  lib/leagues.py          per-league ingest + Elo config + betting lock
   lib/elo.py              the rating model
   lib/odds.py             The Odds API — market lines as a benchmark
   lib/picks.py            prediction, grading, report renderers
@@ -80,7 +83,7 @@ not *there was no line*.
 | command | what it does |
 |---|---|
 | `init` | create the database |
-| `backfill --seasons 2021-2025` | pull historical seasons |
+| `backfill --seasons 2021-2025` | pull historical seasons; `--league` selects nfl, cfb, nba, mlb, cbb, or all |
 | `sync` | refresh the current week's schedule and results |
 | `rate` | recompute every rating from scratch |
 | `odds` | pull the optional multi-book consensus |
@@ -88,7 +91,7 @@ not *there was no line*.
 | `slate` | the current board of picks |
 | `grade` | score finished games |
 | `record` | accuracy: overall, by tier, versus the market |
-| `ratings --league cfb --limit 25` | power ratings |
+| `ratings --league cfb --limit 25` | power ratings (nfl, cfb, nba, mlb, cbb) |
 | `matchup "Georgia" "Alabama" [--neutral]` | any two teams, real fixture or not |
 | `backtest --seasons 2024,2025` | walk-forward test on past seasons |
 | `export [--commit] [--push]` | write the pick record to tracked CSV |
@@ -292,6 +295,7 @@ renders on the repository page in any phone browser.
 | `GRIDIRON_ODDS_KEY` | unset | optional; adds a multi-book consensus over the free ESPN line |
 | `GRIDIRON_MCP_PORT` | `8914` | port the MCP server listens on (loopback only) |
 | `GRIDIRON_MCP_TOKEN` | unset | bearer token; auth is off when unset |
+| `GRIDIRON_LEAGUES` | `nfl,cfb` | ingest/rate/slate `all`. Add `nba`, `mlb`, `cbb` to include them in the cycle. Does **not** unlock sized betting. |
 
 Set them in `~/.config/gridiron/env` (mode 0600), which both systemd units read.
 
@@ -337,6 +341,46 @@ So the sizing stays locked at quarter-Kelly with a 5% cap until the criteria in
 `docs/phase1-spec.md` are met on real bets. The gate saying no is the gate
 working.
 
+## Phase 2 — NBA, MLB, CBB
+
+Football stays the default. New leagues are an ESPN ingest adapter plus a
+config block (`lib/leagues.py`); Elo, picks, and the ledger do not grow a
+sport-specific branch. Spec: `docs/phase2-spec.md`.
+
+Enable for the daily cycle (keep football listed):
+
+```bash
+# ~/.config/gridiron/env
+GRIDIRON_LEAGUES=nfl,cfb,nba,mlb,cbb
+```
+
+Or run a league once without changing the cycle:
+
+```bash
+./bin/gridiron backfill --league nba --seasons 2023-2025
+./bin/gridiron sync     --league nba
+./bin/gridiron rate
+./bin/gridiron predict  --league nba --days 10
+./bin/gridiron slate    --league nba
+./bin/gridiron ratings  --league nba
+```
+
+Same commands work for `mlb` and `cbb`. ESPN season years: NBA/CBB `2025` is
+the 2024–25 season; MLB `2025` is the 2025 campaign.
+
+**What is not unlocked.** `scan`, `poll`, and `bet place` stay football-only.
+There is no Platt fit and no wired Kalshi series for the new sports, and §7
+in `docs/phase1-spec.md` is per-league — an NBA backfill does not size NBA
+contracts. Moneyline winners only; no props, spreads, or totals.
+
+**Known limits.** MLB doubleheaders ingest as two `game` rows (two ESPN ids)
+but Kalshi's date+abbrev ticker cannot tell them apart, which is one reason
+betting stays locked. ESPN's MLB scoreboard calendar is sparse, so backfill
+walks March 20–November 15 rather than trusting it. CBB D1 membership is
+group 50 (same idea as CFB's FBS group 80); a Saturday can be 80+ games.
+Elo K/HFA for nba/mlb/cbb are provisional starting points, not backtested
+fits — `gridiron backtest --league nba` is what replaces them.
+
 ## Tests
 
 ```bash
@@ -361,3 +405,6 @@ changes in `docs/phase1-spec.md` without changing in the code fails the suite.
    scored are noisy; drive efficiency is much less so.
 4. **Injuries and starting quarterbacks**, the single largest thing the model is
    blind to.
+5. **Phase 2 leftovers** (see `docs/phase2-spec.md`): verify Kalshi series
+   against live tickers, fit per-league Platt curves after a real backtest, then
+   — only after §7 — consider flipping `BETTING` for one sport.

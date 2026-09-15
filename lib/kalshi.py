@@ -36,6 +36,10 @@ import urllib.request
 
 BASE = "https://external-api.kalshi.com/trade-api/v2"
 SERIES = {"nfl": "KXNFLGAME", "cfb": "KXNCAAFGAME"}
+# NBA/MLB/CBB series tickers are documented in lib/leagues.py and
+# docs/phase2-spec.md §6. They are not in this map until betting is unlocked
+# for that league — open_markets would otherwise poll a series we have not
+# verified against live tickers.
 USER_AGENT = "gridiron/1.0"
 
 _TICKER = re.compile(r"^(?P<series>[A-Z0-9]+)-(?P<yy>\d{2})(?P<mon>[A-Z]{3})(?P<dd>\d{2})"

@@ -10,7 +10,7 @@ numerator of the stake, so the raw stated number would systematically mis-size.
 """
 import datetime as dt
 
-from . import betting, calibration, db, fees, kalshi, sizing
+from . import betting, calibration, db, fees, kalshi, leagues, sizing
 
 MIN_EDGE = 0.05
 MAX_SPREAD = 0.04
@@ -103,7 +103,6 @@ def evaluate(conn, league, game_id, ticker, pick_market, bankroll, held=()):
 
     q = kalshi.quote(pick_market)
     p_raw = pred["win_prob"]
-    p_cal = calibration.calibrate(p_raw, league)
     flip = (pred["market_pick_team_id"] is not None
             and pred["market_pick_team_id"] != pred["pick_team_id"])
     # prediction.market_prob is the book's confidence in ITS OWN pick. When the
@@ -116,19 +115,26 @@ def evaluate(conn, league, game_id, ticker, pick_market, bankroll, held=()):
 
     c = Candidate(league=league, game_id=game_id, kickoff=pred["kickoff_utc"],
                   pick_name=pred["pick_name"], opponent=opponent, ticker=ticker,
-                  p_raw=p_raw, p_cal=p_cal, market_prob=market_prob, flip=flip,
+                  p_raw=p_raw, market_prob=market_prob, flip=flip,
                   bid=q.bid if q else None, ask=q.ask if q else None,
                   spread=q.spread if q else None,
                   open_interest=float(pick_market.get("open_interest_fp") or 0.0))
 
+    # Phase 2 ingest is not a betting unlock. No Platt fit, no Kalshi series
+    # verification — fail closed before either is consulted.
+    if not leagues.betting_allowed(league):
+        c.gate = "league_disabled"
+        return c
+
+    c.p_cal = calibration.calibrate(p_raw, league)
     if q is None:
         c.gate = "no_quote"
         return c
 
     # Marginal rate, not order_fee: the gate is a per-contract decision and
     # rounding is a sub-cent artifact spread across whatever size you buy.
-    c.edge = p_cal - q.ask - float(fees.rate(q.ask))
-    c.size = sizing.size(p_cal, q.ask, bankroll)
+    c.edge = c.p_cal - q.ask - float(fees.rate(q.ask))
+    c.size = sizing.size(c.p_cal, q.ask, bankroll)
 
     # Already on it: proposing the same bet again is an instruction to double up.
     if (game_id, pred["pick_team_id"]) in held:
@@ -140,9 +146,9 @@ def evaluate(conn, league, game_id, ticker, pick_market, bankroll, held=()):
         c.gate = "stale_rating"
     elif market_prob is None:
         c.gate = "no_market_reference"       # fails closed: the sanity check can't run
-    elif flip and abs(p_cal - market_prob) > SUSPECT_FLIP:
+    elif flip and abs(c.p_cal - market_prob) > SUSPECT_FLIP:
         c.gate = "suspect_direction"
-    elif not flip and abs(p_cal - market_prob) > SUSPECT_SAME_SIDE:
+    elif not flip and abs(c.p_cal - market_prob) > SUSPECT_SAME_SIDE:
         c.gate = "suspect_rating"
     elif (market_prob is not None
           and abs(q.mid - market_prob) > MAX_BOOK_PRICE_GAP):
@@ -164,7 +170,13 @@ def evaluate(conn, league, game_id, ticker, pick_market, bankroll, held=()):
 
 
 def scan(conn, league, bankroll):
-    """Fetch live Kalshi markets, resolve them, and gate every one."""
+    """Fetch live Kalshi markets, resolve them, and gate every one.
+
+    Phase 2 leagues are ingestable but not bettable. Fail closed rather than
+    polling a Kalshi series we have not verified, or sizing with no Platt fit.
+    """
+    if not leagues.betting_allowed(league):
+        return [], []
     events = kalshi.by_event(kalshi.open_markets(league))
     held = betting.open_positions(conn)
     out, unresolved = [], []

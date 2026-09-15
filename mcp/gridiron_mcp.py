@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lib import db, picks  # noqa: E402
+from lib import db, leagues, picks  # noqa: E402
 
 HOST = os.environ.get("GRIDIRON_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("GRIDIRON_MCP_PORT", "8914"))
@@ -135,7 +135,7 @@ def tool_status(_):
     c = conn()
     try:
         out = [f"db: {db.DB_PATH}"]
-        for league in ("nfl", "cfb"):
+        for league in leagues.KNOWN:
             g = c.execute(
                 "SELECT COUNT(*) n, SUM(status = 'final') fin, MIN(season) lo, MAX(season) hi "
                 "FROM game WHERE league = ?", (league,)).fetchone()
@@ -160,8 +160,9 @@ def tool_status(_):
         c.close()
 
 
-LEAGUE_PROP = {"type": "string", "enum": ["nfl", "cfb", "all"],
-               "description": "nfl, cfb, or all (default all)"}
+LEAGUE_PROP = {"type": "string", "enum": list(leagues.KNOWN) + ["all"],
+               "description": "nfl, cfb, nba, mlb, cbb, or all (default all; "
+                              "all follows GRIDIRON_LEAGUES, football unless set)"}
 
 TOOLS = [
     {"name": "slate",
@@ -181,7 +182,7 @@ TOOLS = [
      "description": "Power ratings (Elo, 1500 = average) ordered best to worst. Shows who the "
                     "model thinks is good, independent of any particular matchup.",
      "inputSchema": {"type": "object", "properties": {
-         "league": {"type": "string", "enum": ["nfl", "cfb"], "default": "nfl"},
+         "league": {"type": "string", "enum": list(leagues.KNOWN), "default": "nfl"},
          "limit": {"type": "integer", "description": "how many teams (default 25)",
                    "default": 25}}},
      "_fn": tool_ratings},
